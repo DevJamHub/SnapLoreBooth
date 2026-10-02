@@ -1,9 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { deletePrefix } from './cloud';
 import { db, UPLOAD_DIR } from './db';
 
 /** Guest photos are personal data: the consent copy promises the booth forgets them. */
-const RETENTION_HOURS = Number(process.env.RETENTION_HOURS ?? 24);
+// A week by default: long enough to download from the QR after the party, short enough to forget.
+const RETENTION_HOURS = Number(process.env.RETENTION_HOURS ?? 168);
 const THROTTLE_MS = 10 * 60 * 1000;
 
 let lastRun = 0;
@@ -26,6 +28,13 @@ export async function purgeExpired(force = false): Promise<PurgeResult> {
     // Remove the files first: a crash then leaves an orphan row we will retry, not an
     // orphan folder no row points at.
     await fs.rm(path.join(UPLOAD_DIR, id), { recursive: true, force: true });
+    try {
+      await deletePrefix(id);
+    } catch (error) {
+      // Leave the row so the next sweep retries the cloud copy rather than orphaning it.
+      console.error('[retention] R2 delete failed for', id, error instanceof Error ? error.message : error);
+      continue;
+    }
     db.prepare('DELETE FROM photos WHERE session_id = ?').run(id);
     // The settled record lives in the Xendit dashboard; the booth's copy goes with the session.
     db.prepare('DELETE FROM payments WHERE session_id = ?').run(id);

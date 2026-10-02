@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { camera } from '@/lib/camera';
 import { addPhoto, getSession, listPhotos } from '@/lib/db';
 import { sessionUnlocked } from '@/lib/payments';
+import { mirrorFile } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,6 +29,8 @@ export async function POST(request: Request) {
 
   try {
     const result = await source.capture(sessionId, index);
+    // Tethered stills land on disk straight from the camera, so they are copied off-site here.
+    await mirrorFile(result.file);
     const photo = addPhoto(sessionId, index, result.file);
     return NextResponse.json({ photo, bytes: result.bytes, photos: listPhotos(sessionId) }, { status: 201 });
   } catch (error) {

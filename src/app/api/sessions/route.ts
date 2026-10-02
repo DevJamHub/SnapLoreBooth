@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
-import { createSession, listSessions } from '@/lib/db';
-import { ADDONS, packageById } from '@/lib/packages';
+import { createSession, listSessions, updateSession } from '@/lib/db';
+import { currentEvent, priceOf } from '@/lib/events';
+import { EXTRA_PRINT, MAX_EXTRA_PRINTS, packageById } from '@/lib/packages';
+import { paymentsEnabled } from '@/lib/payments';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +19,7 @@ export function GET() {
 }
 
 export async function POST(request: Request) {
-  let body: { packageId?: string; addons?: unknown };
+  let body: { packageId?: string; extraPrints?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -27,15 +29,14 @@ export async function POST(request: Request) {
   const pkg = packageById(String(body.packageId ?? ''));
   if (!pkg) return NextResponse.json({ error: 'unknown packageId' }, { status: 400 });
 
-  const known = new Set(ADDONS.map((a) => a.id));
-  const requested = Array.isArray(body.addons) ? body.addons.map(String) : [];
-  const unknown = requested.filter((a) => !known.has(a));
-  if (unknown.length) return NextResponse.json({ error: `unknown addons: ${unknown.join(', ')}` }, { status: 400 });
+  const extraPrints = body.extraPrints === undefined ? 0 : Number(body.extraPrints);
+  if (!Number.isInteger(extraPrints) || extraPrints < 0 || extraPrints > MAX_EXTRA_PRINTS) {
+    return NextResponse.json({ error: `extraPrints must be an integer between 0 and ${MAX_EXTRA_PRINTS}` }, { status: 400 });
+  }
 
-  const addons = [...new Set(requested)];
-  const chosen = ADDONS.filter((a) => addons.includes(a.id));
-  const priceIdr = pkg.priceIdr + chosen.reduce((sum, a) => sum + a.priceIdr, 0);
-  const prints = pkg.prints + chosen.reduce((sum, a) => sum + a.extraPrints, 0);
+  // The price is always worked out here from the event's price list; the kiosk never sends one.
+  const event = currentEvent();
+  const priceIdr = priceOf(event, pkg.id) + extraPrints * priceOf(event, EXTRA_PRINT.id);
 
   const session = createSession({
     id: newSessionId(),
@@ -44,9 +45,13 @@ export async function POST(request: Request) {
     format: pkg.format,
     shots: pkg.shots,
     priceIdr,
-    addons,
-    prints,
+    addons: extraPrints > 0 ? [EXTRA_PRINT.id] : [],
+    prints: 1 + extraPrints,
+    eventId: event.id,
+    // Nothing to collect on a zero total, even when the event takes QRIS.
+    requiresPayment: paymentsEnabled() && priceIdr > 0,
   });
 
-  return NextResponse.json({ session }, { status: 201 });
+  // The guest styles the frame before paying, so a session opens on the Hias step.
+  return NextResponse.json({ session: updateSession(session.id, { status: 'reviewing' }) }, { status: 201 });
 }

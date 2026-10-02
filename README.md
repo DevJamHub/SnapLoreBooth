@@ -33,32 +33,145 @@ development; on a real booth serve it over HTTPS or the browser will refuse `get
 ## Guest flow
 
 Guest screens carry no telemetry, session ids or camera jargon: one decision per screen, big
-touch targets, and a step indicator (Pilih → Bayar → Foto → Hias → Cetak; *Bayar* disappears
-when payment is off). Every screen finds its own way back to standby.
+touch targets, and a step indicator (Pilih → Hias → Bayar → Foto → Cetak; *Bayar* disappears
+when the event is free). Every screen finds its own way back to standby, and on standby only
+the *Sentuh untuk mulai* button starts a session.
 
-| Route | What happens | Returns to standby |
+| Route | What happens | Clock |
 | --- | --- | --- |
-| `/` | Standby: drifting polaroids, "Sentuh untuk mulai". A touch anywhere starts | — |
-| `/paket` | Pick Strip Klasik 2x6 / Kartu Pos 4x6 / Satu Potret 1:1, optional extra print | after 60s untouched |
-| `/pay/[id]` | QRIS from Xendit; moves on by itself once paid. *Batal* asks first while a code is live | 45s after the code expires |
-| `/capture/[id]` | Full-screen viewfinder. One tap starts; every pose then runs itself (5s, then 3s per pose) with a snapshot after each | — (paid) |
-| `/review/[id]` | *Hias*: pick a colour (filter) and a frame on the composed board | prints itself after 60s |
-| `/share/[id]` | Print progress, QR to save to a phone | 45s after printing |
-| `/d/[id]` | What the QR opens on the guest's phone: the board and each frame | — |
+| `/` | Standby: drifting polaroids and one start button | — |
+| `/paket` | 6 / 4 / 3 poses or one portrait, all on **one uncut 4R sheet**; a stepper adds extra sheets (+1 cetak) | back to standby after 60s untouched |
+| `/hias/[id]` | Pick the frame and the colour look on a live preview of the sheet | 5 minutes, then continues with what is selected |
+| `/pay/[id]` | QRIS from Xendit; moves on by itself once paid. *Batal* asks first while a code is live | back to standby 45s after the code expires |
+| `/capture/[id]` | Camera on the left, the sheet filling in on the right. 3-second countdown per shot; afterwards tap any photo on the sheet to retake it | 10 minutes, then missing shots are taken and the sheet goes to print |
+| `/share/[id]` | Print (simulated or AirPrint), QR to save to a phone, opt out of the live gallery | 45s after printing; 3 min if never printed |
+| `/d/[id]` | What the QR opens: the sheet, every photo, and every **live clip** | — |
+| `/g/[slug]` | The event link: rotating live sheets while it runs, the photo gallery once it ends | — |
 
-Stills are saved exactly as the sensor saw them — not mirrored, not filtered. The look is
-applied once, when the board is composed, so it can never be applied twice. Filters are
-plain colour operations (`FILTERS` in `src/lib/packages.ts`) applied with `ctx.filter` where
-the browser supports it and pixel by pixel where it does not (Safari before 18).
+The viewfinder takes the exact shape of a photo slot on the chosen sheet, so what the guest
+frames is what prints. Stills are saved as the sensor saw them — not mirrored, not filtered;
+the look is applied once, when the sheet is composed. Filters are plain colour operations
+(`FILTERS` in `src/lib/packages.ts`) applied with `ctx.filter` where the browser supports it
+and pixel by pixel where it does not (Safari before 18). Frames are `TEMPLATES` in the same
+file; adding an entry to either list adds it to every screen.
 
-Add-ons are limited to what the booth actually delivers: today that is one extra print.
+**Live clips.** Every shot also records its 3-second countdown (and a beat past the shutter)
+with `MediaRecorder` — MP4 on Safari, MP4 or WebM on Chrome — and uploads it to
+`POST /api/sessions/[id]/clips?index=n`. A retake replaces the clip with the still. The
+download page plays them on a loop, silently, like GIFs. A tethered body has no clips.
 
-### Booth settings
+**Live sheet.** While the printer works, the print screen records one more video: the whole
+sheet in its frame, colour look and event name, with every slot playing its own clip at the
+same time (`composeLive()` in `src/lib/strip.ts`, an 800x1200 canvas captured with
+`MediaRecorder`). It replaces the still on the print screen, leads the QR page — which waits
+for it if the guest scans first — and plays in the gallery's TV mode. *Selesai* waits the few
+seconds it takes. Without canvas filter support (Safari before 18) the live sheet skips the
+colour look; the printed sheet always has it.
+
+Layouts live in `boardLayout()` in `src/lib/strip.ts`: every package is a 1200x1800 board
+(4x6in at 300dpi), and old 2x6 strips still render for sessions made before.
+
+## Events: one gig, one set of settings
+
+Everything that changes from gig to gig lives on an **event**, edited in the operator
+console — no code or env edits on the day:
+
+| Setting | Options |
+| --- | --- |
+| Name | Printed under the photos and shown on standby and the gallery |
+| Guest payment | **QRIS** (guests pay) or **Gratis** (the host paid for the rental) |
+| Printing | **Simulasi** or **AirPrint** (see below) |
+| Prices | Per package and add-on; 0 makes it free. Paid packages start at Rp1.500, the QRIS minimum |
+| Event link | On/off. Second screen while running, photo gallery once ended |
+
+*Mulai acara baru* starts the next gig: new sessions join it, it gets its own gallery link,
+and it inherits the previous event's prices and modes. A session keeps the payment rule it
+started under, so switching a running event to *Gratis* never strands a guest mid-payment.
+`PAYMENT=off` in the environment still overrides every event, for rehearsals.
 
 ```bash
-EVENT_NAME="Nikahan Rina & Dimas"   # printed under the photos on frames that carry a name
-PUBLIC_BASE_URL=https://booth.example.com   # where the take-home QR points; defaults to this host
+PUBLIC_BASE_URL=https://booth.example.com   # where QR codes point; defaults to the request host
+EVENT_NAME="SnaploreBooth"                  # only names the very first event on a fresh booth
 ```
+
+## Event link: second screen during, gallery after
+
+`/g/<slug>` is one link with two faces, chosen by the event's state:
+
+- **While the event runs** it is the venue's second screen: three guests' live sheets side by
+  side (one on a phone), looping, fading every 9 seconds to the next three and wrapping round
+  to the first guest when everyone has had a turn. A guest who just finished jumps into the
+  next group with a *Baru* tag. The header carries the guest count and a QR to the link.
+- **When the operator ends the event** (*Akhiri acara* in the console, or by starting the
+  next event) every screen on the link switches by itself, within 5 seconds, to the photo
+  gallery: every sheet, each opening to its live sheet with photo and video downloads.
+  *Buka lagi* reopens an event ended by mistake.
+
+Guests can keep their own photo off the link from the print screen. The slug ends in random
+characters so the link cannot be guessed from the event name.
+
+## Printing: AirPrint to a Canon SELPHY
+
+With the event's printing set to **AirPrint**, the last screen shows *Cetak*: it opens the
+iPad's print sheet with one page per sheet paid for, each a full 4x6in board. Pick the SELPHY
+(CP1300/CP1500 support AirPrint) once; iOS remembers it. Safari always shows the print sheet
+— printing with no dialog at all needs the native app wrapper, which is not built yet.
+*Simulasi* keeps the timed progress bar for rehearsals without a printer.
+
+## Photo backup to Cloudflare R2 (optional)
+
+Photos are always written to `data/uploads` first. With R2 configured, each one is also
+copied to a bucket, and `/api/media` falls back to a five-minute signed R2 link for any
+photo the local disk no longer has — after a disk failure or a move to a new server. A
+failed copy is logged and never interrupts a guest. Retention deletes the cloud copy too.
+
+```bash
+R2_ACCOUNT_ID=...          # Cloudflare dashboard → R2 → Account ID
+R2_ACCESS_KEY_ID=...       # R2 → Manage API tokens → Object Read & Write on the bucket
+R2_SECRET_ACCESS_KEY=...
+R2_BUCKET=snaplorebooth    # keep the bucket private; the booth signs every link
+```
+
+## Running it on an iPad (no App Store)
+
+For a booth you run yourself, the app does not need to be in the App Store. Once it is
+online at an HTTPS domain (see *Deploy to a VPS*):
+
+1. On the iPad open the domain in **Safari**, then **Share → Add to Home Screen**. It opens
+   full screen from its own icon, like an app; updates arrive on the next reload.
+2. Allow the camera when asked. In *Konsol → Kamera* pick the camera and mirroring.
+3. Lock the iPad to the booth with **Settings → Accessibility → Guided Access**, then
+   triple-click the side button inside the booth. Turn off Auto-Lock in Display settings.
+4. Hold the standby logo for 3 seconds to reach the operator console.
+
+A native wrapper (Capacitor, installed through TestFlight with a $99/year Apple Developer
+account) only becomes necessary for printing with no dialog or for running without internet.
+
+## Deploy to a VPS
+
+One small Ubuntu VPS (2 GB RAM) runs the whole booth backend: pages, SQLite, Xendit and the
+photos. `deploy/` holds the pieces.
+
+```bash
+# on the VPS, once
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+sudo apt install -y nodejs caddy
+sudo useradd --system --create-home booth
+sudo mkdir -p /opt/snaplorebooth && sudo chown booth /opt/snaplorebooth
+# copy the project into /opt/snaplorebooth (git clone or rsync, without node_modules and data)
+# then create /opt/snaplorebooth/.env.local with the production values:
+#   OPERATOR_PASSWORD, XENDIT_SECRET_KEY, XENDIT_CALLBACK_TOKEN, PUBLIC_BASE_URL, optional R2_*
+cd /opt/snaplorebooth && sudo -u booth npm ci && sudo -u booth npm run build
+sudo cp deploy/snaplorebooth.service /etc/systemd/system/ && sudo systemctl enable --now snaplorebooth
+sudo cp deploy/Caddyfile /etc/caddy/Caddyfile   # edit the domain first
+sudo systemctl reload caddy
+```
+
+Point the domain's DNS A record at the VPS; Caddy fetches the HTTPS certificate itself, so
+the mkcert setup below is only for running the booth on a Mac on the LAN. In the Xendit
+dashboard register `https://<domain>/api/payments/xendit` as the *QR code paid* webhook.
+Later updates: copy the new code in and run `deploy/update.sh`. Back up `data/` — it holds
+the database and the photos.
 
 ## API
 
@@ -66,14 +179,19 @@ PUBLIC_BASE_URL=https://booth.example.com   # where the take-home QR points; def
 | --- | --- | --- |
 | `GET` | `/api/status` | Paper estimate, printer state, counts; also runs the retention sweep |
 | `GET` `POST` | `/api/sessions` | List sessions / start one from a package + add-ons |
-| `GET` `PATCH` | `/api/sessions/[id]` | Read session with photos (contact details withheld) / update status, filter, template. The print count is fixed by what was paid |
+| `GET` `PATCH` | `/api/sessions/[id]` | Read session with photos (contact details withheld) / update status, filter, template, `in_gallery`. The print count is fixed by what was paid |
 | `POST` | `/api/sessions/[id]/photos` | Store one captured frame (`{index, dataUrl}`) |
+| `POST` | `/api/sessions/[id]/clips?index=n` | Store that shot's live clip (raw MP4/WebM body, 15MB max) |
+| `POST` | `/api/sessions/[id]/live` | Store the live sheet video (raw MP4/WebM body) |
 | `POST` | `/api/sessions/[id]/strip` | Store the composed board and send it to print (paid sessions only) |
 | `POST` | `/api/sessions/[id]/deliver` | Record an email/SMS delivery target (no guest screen uses it yet) |
 | `POST` `GET` | `/api/sessions/[id]/payment` | Issue (or reuse) the session's QRIS code / poll whether it is paid |
 | `POST` | `/api/sessions/[id]/payment/simulate` | Pay the current QR from the Xendit sandbox — development keys only |
 | `POST` | `/api/payments/xendit` | Xendit `qr.payment` webhook, verified by `x-callback-token` |
-| `GET` | `/api/media/[...path]` | Serve a stored image from the upload root |
+| `GET` | `/api/media/[...path]` | Serve a stored photo or clip (byte ranges, for Safari video), or redirect to its signed R2 copy |
+| `PATCH` `POST` | `/api/operator/event` | Edit the running event, incl. `{ended}` / start a new one (operator only) |
+| `GET` | `/api/events/[slug]/gallery` | `{ ended, items }` for the event link; 404 when its gallery is off |
+| `GET` | `/manifest.webmanifest`, `/apple-icon`, `/pwa-icon/[size]` | What "Add to Home Screen" installs |
 
 Uploads accept base64 `png`/`jpeg`/`webp` data URLs up to 12MB; path segments are sanitised
 and reads are confined to `data/uploads`.
@@ -253,10 +371,10 @@ and restarted afterwards; every camera operation is serialised through one lock.
 ## Data retention
 
 Guest photos are personal data, so the booth forgets them. Sessions older than
-`RETENTION_HOURS` (default 24) are deleted with their stored frames by a throttled sweep
-that runs off `/api/status` — the endpoint the kiosk already polls every 15 seconds, so no
-separate scheduler is needed. The consent checkbox on the share screen states the actual
-window rather than a vague promise.
+`RETENTION_HOURS` (default 168, one week — long enough to download from the QR after the
+party) are deleted with their stored frames, and their R2 copies, by a throttled sweep that
+runs off `/api/status` — the endpoint the standby screen pings every minute, so no separate
+scheduler is needed. The share screen states the actual window.
 
 ```bash
 RETENTION_HOURS=6 npm run dev   # shorter window for a one-night event
@@ -264,11 +382,13 @@ RETENTION_HOURS=6 npm run dev   # shorter window for a one-night event
 
 ## Known limits
 
-- **Printing is simulated.** The print screen advances on a timer (`SECONDS_PER_COPY` in
-  `ShareStage.tsx`) and paper level is derived from prints recorded today
-  (`PAPER_ROLL_CAPACITY` in `src/lib/db.ts`). The operator console says so.
-- **The take-home QR only works on the booth's network.** It points at this server unless
-  `PUBLIC_BASE_URL` is set, so a guest's phone must reach it — and trust its certificate.
+- **Printing goes through the print sheet.** AirPrint mode needs a tap on *Print* each time;
+  the app cannot tell whether paper actually came out. Paper level is an estimate from prints
+  recorded today (`PAPER_ROLL_CAPACITY` in `src/lib/db.ts`).
+- **On a Mac on the LAN, the take-home QR only works on the booth's network.** Deployed to a
+  VPS with `PUBLIC_BASE_URL`, it works from anywhere.
+- **The booth needs internet when deployed.** The iPad loads the app and uploads photos to
+  the VPS; bring a modem rather than relying on venue Wi-Fi.
 - **Email/SMS delivery has no guest screen.** The endpoint remains; nothing sends mail.
 - **The tethered path is verified only up to the macOS claim.** A real Canon EOS M50 has
   been attached and is correctly detected, and the readiness probe and every failure path

@@ -53,21 +53,61 @@ function open(): Database.Database {
       provider_payment_id TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_payments_session ON payments(session_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS events (
+      id           TEXT PRIMARY KEY,
+      slug         TEXT NOT NULL UNIQUE,
+      name         TEXT NOT NULL,
+      created_at   TEXT NOT NULL,
+      payment_mode TEXT NOT NULL DEFAULT 'qris',
+      gallery      INTEGER NOT NULL DEFAULT 1,
+      print_mode   TEXT NOT NULL DEFAULT 'simulated',
+      prices       TEXT NOT NULL DEFAULT '{}'
+    );
   `);
+  // `next build` opens the database from several workers at once. An IMMEDIATE transaction
+  // takes the write lock before checking, so the others wait and then find the column there.
+  db.transaction(() => {
+    addColumn(db, 'sessions', 'event_id', 'event_id TEXT');
+    addColumn(db, 'sessions', 'requires_payment', 'requires_payment INTEGER NOT NULL DEFAULT 1');
+    addColumn(db, 'sessions', 'in_gallery', 'in_gallery INTEGER NOT NULL DEFAULT 1');
+    addColumn(db, 'photos', 'clip_file', 'clip_file TEXT');
+    addColumn(db, 'sessions', 'live_file', 'live_file TEXT');
+    addColumn(db, 'events', 'ended_at', 'ended_at TEXT');
+  }).immediate();
+  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_event ON sessions(event_id, created_at DESC)');
   return db;
+}
+
+/** SQLite has no ADD COLUMN IF NOT EXISTS; booths upgraded in place keep their data. */
+function addColumn(db: Database.Database, table: string, column: string, ddl: string) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (columns.some((c) => c.name === column)) return;
+  try {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  } catch (error) {
+    // Another process won the race between our check and the ALTER; the column is there.
+    if (!(error instanceof Error && /duplicate column name/i.test(error.message))) throw error;
+  }
 }
 
 export const db: Database.Database = globalForDb.__boothDb ?? open();
 if (process.env.NODE_ENV !== 'production') globalForDb.__boothDb = db;
 
-interface SessionRow extends Omit<Session, 'addons' | 'photo_count'> {
+interface SessionRow extends Omit<Session, 'addons' | 'photo_count' | 'requires_payment' | 'in_gallery'> {
   addons: string;
   photo_count: number;
+  requires_payment: number;
+  in_gallery: number;
 }
 
 function hydrate(row: SessionRow | undefined): Session | null {
   if (!row) return null;
-  return { ...row, addons: JSON.parse(row.addons) as string[] };
+  return {
+    ...row,
+    addons: JSON.parse(row.addons) as string[],
+    requires_payment: row.requires_payment === 1,
+    in_gallery: row.in_gallery === 1,
+  };
 }
 
 const SELECT_SESSION = `
@@ -84,10 +124,12 @@ export function createSession(input: {
   priceIdr: number;
   addons: string[];
   prints: number;
+  eventId: string;
+  requiresPayment: boolean;
 }): Session {
   db.prepare(
-    `INSERT INTO sessions (id, created_at, package_id, package_label, format, shots, price_idr, addons, prints)
-     VALUES (@id, @created_at, @package_id, @package_label, @format, @shots, @price_idr, @addons, @prints)`,
+    `INSERT INTO sessions (id, created_at, package_id, package_label, format, shots, price_idr, addons, prints, event_id, requires_payment)
+     VALUES (@id, @created_at, @package_id, @package_label, @format, @shots, @price_idr, @addons, @prints, @event_id, @requires_payment)`,
   ).run({
     id: input.id,
     created_at: new Date().toISOString(),
@@ -98,6 +140,8 @@ export function createSession(input: {
     price_idr: input.priceIdr,
     addons: JSON.stringify(input.addons),
     prints: input.prints,
+    event_id: input.eventId,
+    requires_payment: input.requiresPayment ? 1 : 0,
   });
   return getSession(input.id)!;
 }
@@ -113,22 +157,40 @@ export function listSessions(limit = 50): Session[] {
 
 export function updateSession(
   id: string,
-  patch: Partial<Pick<Session, 'status' | 'filter' | 'template' | 'prints' | 'delivered_to' | 'strip_file'>>,
+  patch: Partial<Pick<Session, 'status' | 'filter' | 'template' | 'prints' | 'delivered_to' | 'strip_file' | 'in_gallery' | 'live_file'>>,
 ): Session | null {
   const fields = Object.keys(patch) as (keyof typeof patch)[];
   if (fields.length === 0) return getSession(id);
   const assignments = fields.map((f) => `${f} = @${f}`).join(', ');
-  db.prepare(`UPDATE sessions SET ${assignments} WHERE id = @id`).run({ id, ...patch });
+  // SQLite stores booleans as 0/1 and better-sqlite3 refuses to bind a JS boolean.
+  const values = Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, typeof v === 'boolean' ? (v ? 1 : 0) : v]));
+  db.prepare(`UPDATE sessions SET ${assignments} WHERE id = @id`).run({ id, ...values });
   return getSession(id);
+}
+
+/** Boards a guest agreed to show, newest first, for the event's live gallery. */
+export function galleryItems(eventId: string, limit = 120): { id: string; strip_file: string; live_file: string | null; created_at: string }[] {
+  return db
+    .prepare(
+      `SELECT id, strip_file, live_file, created_at FROM sessions
+       WHERE event_id = ? AND in_gallery = 1 AND strip_file IS NOT NULL AND status IN ('printing', 'done')
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(eventId, limit) as { id: string; strip_file: string; live_file: string | null; created_at: string }[];
 }
 
 export function addPhoto(sessionId: string, idx: number, file: string): Photo {
   const id = `${sessionId}-${idx}`;
   db.prepare(
     `INSERT INTO photos (id, session_id, idx, file, created_at) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT (session_id, idx) DO UPDATE SET file = excluded.file, created_at = excluded.created_at`,
+     ON CONFLICT (session_id, idx) DO UPDATE SET file = excluded.file, created_at = excluded.created_at, clip_file = NULL`,
   ).run(id, sessionId, idx, file, new Date().toISOString());
   return db.prepare('SELECT * FROM photos WHERE session_id = ? AND idx = ?').get(sessionId, idx) as Photo;
+}
+
+/** Attaches the short video recorded during a shot's countdown. False when the still is missing. */
+export function setClip(sessionId: string, idx: number, file: string): boolean {
+  return db.prepare('UPDATE photos SET clip_file = ? WHERE session_id = ? AND idx = ?').run(file, sessionId, idx).changes > 0;
 }
 
 export function listPhotos(sessionId: string): Photo[] {

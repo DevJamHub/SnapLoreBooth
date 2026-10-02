@@ -1,7 +1,11 @@
 import { notFound } from 'next/navigation';
+import LivePanel from '@/components/LivePanel';
+import LoopVideo from '@/components/LoopVideo';
 import { getSession, listPhotos } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
+
+const mediaUrl = (file: string) => `/api/media/${file.split('/').map(encodeURIComponent).join('/')}`;
 
 /** What a guest's phone opens after scanning the booth QR code. */
 export default async function DownloadPage({ params }: { params: Promise<{ id: string }> }) {
@@ -9,8 +13,8 @@ export default async function DownloadPage({ params }: { params: Promise<{ id: s
   const session = getSession(id);
   if (!session || !session.strip_file) notFound();
 
-  const mediaUrl = (file: string) => `/api/media/${file.split('/').map(encodeURIComponent).join('/')}`;
   const photos = listPhotos(id);
+  const clips = photos.filter((p) => p.clip_file);
 
   return (
     <main className="dl">
@@ -19,7 +23,7 @@ export default async function DownloadPage({ params }: { params: Promise<{ id: s
       </span>
       <h1 className="g-title" style={{ fontSize: 40 }}>Fotomu sudah siap</h1>
       <p className="g-lead" style={{ fontSize: 17 }}>
-        Tekan lama pada foto lalu pilih <b>Simpan ke Foto</b>, atau pakai tombol di bawah.
+        Tekan lama pada foto atau video lalu pilih <b>Simpan</b>, atau pakai tombol download.
       </p>
 
       {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -28,6 +32,24 @@ export default async function DownloadPage({ params }: { params: Promise<{ id: s
       <a className="g-cta" href={mediaUrl(session.strip_file)} download={`snaplorebooth-${session.id}.jpeg`}>
         Download foto
       </a>
+
+      {clips.length > 0 && <LivePanel sessionId={session.id} initialFile={session.live_file} poster={mediaUrl(session.strip_file)} />}
+
+      {clips.length > 0 && (
+        <>
+          <p className="g-kicker" style={{ marginTop: 16 }}>Video per foto · {clips.length}</p>
+          <div className="dl-clips">
+            {clips.map((photo) => (
+              <figure key={photo.id}>
+                <LoopVideo src={mediaUrl(photo.clip_file!)} poster={mediaUrl(photo.file)} />
+                <a href={mediaUrl(photo.clip_file!)} download={`snaplorebooth-${session.id}-${photo.idx}.${photo.clip_file!.split('.').pop()}`}>
+                  Download video {photo.idx}
+                </a>
+              </figure>
+            ))}
+          </div>
+        </>
+      )}
 
       {photos.length > 1 && (
         <>

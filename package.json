@@ -9,9 +9,11 @@
     "lint": "next lint",
     "dev:https": "next dev -p 4300 --experimental-https --experimental-https-key ./certs/booth-key.pem --experimental-https-cert ./certs/booth.pem",
     "certs": "mkcert -cert-file certs/booth.pem -key-file certs/booth-key.pem localhost 127.0.0.1 ::1 $(ipconfig getifaddr en0)",
-    "camera:free": "bash scripts/free-camera.sh"
+    "camera:free": "bash scripts/free-camera.sh",
+    "tunnel": "cloudflared tunnel --url http://localhost:4300"
   },
   "dependencies": {
+    "aws4fetch": "^1.0.20",
     "better-sqlite3": "^12.11.1",
     "next": "^15.5.4",
     "qrcode": "^1.5.4",

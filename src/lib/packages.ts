@@ -1,49 +1,35 @@
 export interface BoothPackage {
   id: string;
   label: string;
+  /** Board layout on one uncut 4R (4x6in) sheet; see boardLayout() in strip.ts. */
   format: string;
   shots: number;
-  prints: number;
   priceIdr: number;
   blurb: string;
+  /** Grid shape for the little preview on the package card. */
+  cols: number;
+  rows: number;
 }
 
+/** Every package prints on one 4R sheet. More copies are bought as extra prints. */
 export const PACKAGES: BoothPackage[] = [
-  {
-    id: 'strip',
-    label: 'Strip Klasik',
-    format: '2x6',
-    shots: 4,
-    prints: 2,
-    priceIdr: 25000,
-    blurb: '4 pose, dicetak memanjang. Dapat 2 lembar — satu buat kamu, satu buat temanmu.',
-  },
-  {
-    id: 'postcard',
-    label: 'Kartu Pos',
-    format: '4x6',
-    shots: 3,
-    prints: 1,
-    priceIdr: 25000,
-    blurb: '3 pose dalam satu kartu besar. Pas buat rame-rame.',
-  },
-  {
-    id: 'square',
-    label: 'Satu Potret',
-    format: '1x1',
-    shots: 1,
-    prints: 1,
-    priceIdr: 20000,
-    blurb: 'Satu foto terbaikmu, dicetak persegi.',
-  },
+  { id: 'six', label: '6 Pose', format: 'grid6', shots: 6, priceIdr: 30000, cols: 2, rows: 3, blurb: 'Enam gaya dalam satu lembar. Paling seru buat rame-rame.' },
+  { id: 'four', label: '4 Pose', format: 'grid4', shots: 4, priceIdr: 25000, cols: 2, rows: 2, blurb: 'Empat foto besar, susunan kotak klasik.' },
+  { id: 'three', label: '3 Pose', format: 'stack3', shots: 3, priceIdr: 25000, cols: 1, rows: 3, blurb: 'Tiga foto lebar bertumpuk. Pas buat grup.' },
+  { id: 'single', label: 'Satu Potret', format: 'single', shots: 1, priceIdr: 20000, cols: 1, rows: 1, blurb: 'Satu foto terbaikmu, satu lembar penuh.' },
 ];
 
-/** Only add-ons the booth actually delivers; each one changes what comes out of the printer. */
-export const ADDONS = [{ id: 'extra-print', label: 'Tambah 1 cetakan', priceIdr: 5000, extraPrints: 1 }];
+/** Priced per extra 4R sheet; guests pick how many. */
+export const EXTRA_PRINT = { id: 'extra-print', label: '+1 cetak', priceIdr: 15000 };
+export const MAX_EXTRA_PRINTS = 20;
+
+/** Everything the operator can price. Kept as a list so the console renders it generically. */
+export const ADDONS = [EXTRA_PRINT];
 
 /**
  * Looks are kept as discrete operations rather than CSS strings so the board can be
  * composed pixel by pixel on browsers whose canvas ignores `ctx.filter` (older Safari).
+ * Add a look by adding an entry here; every screen picks it up.
  */
 export type FilterOp =
   | { op: 'saturate'; v: number }
@@ -71,6 +57,7 @@ export function filterCss(id: string): string {
   return ops.length ? ops.map((o) => `${o.op}(${o.v})`).join(' ') : 'none';
 }
 
+/** A frame design. Add one by adding an entry here. */
 export interface BoothTemplate {
   id: string;
   label: string;

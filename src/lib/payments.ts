@@ -1,4 +1,5 @@
-import { createPayment, isSessionPaid, latestPayment, markPaymentPaid } from './db';
+import { createPayment, getSession, isSessionPaid, latestPayment, markPaymentPaid } from './db';
+import { currentEvent } from './events';
 import type { Payment, Session } from './types';
 import { createDynamicQr, listQrPayments } from './xendit';
 
@@ -9,13 +10,18 @@ const POLL_THROTTLE_MS = 3000;
 
 const lastPolled = new Map<string, number>();
 
-/** `PAYMENT=off` runs the booth free, for rehearsals and private events. */
+/**
+ * Whether new guests pay by QRIS. Set per event in the operator console; `PAYMENT=off` in the
+ * environment overrides every event, for rehearsals.
+ */
 export function paymentsEnabled(): boolean {
-  return process.env.PAYMENT !== 'off';
+  return process.env.PAYMENT !== 'off' && currentEvent().payment_mode === 'qris';
 }
 
 export function sessionUnlocked(sessionId: string): boolean {
-  return !paymentsEnabled() || isSessionPaid(sessionId);
+  const session = getSession(sessionId);
+  if (!session) return false;
+  return !session.requires_payment || process.env.PAYMENT === 'off' || isSessionPaid(sessionId);
 }
 
 function expired(payment: Payment): boolean {

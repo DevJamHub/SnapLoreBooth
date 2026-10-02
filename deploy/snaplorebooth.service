@@ -1,0 +1,18 @@
+# Keeps the booth running and restarts it after a crash or a reboot.
+# sudo cp snaplorebooth.service /etc/systemd/system/ && sudo systemctl enable --now snaplorebooth
+[Unit]
+Description=SnaploreBooth photobooth server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=booth
+WorkingDirectory=/opt/snaplorebooth
+# Next.js reads .env.local from the working directory on its own.
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

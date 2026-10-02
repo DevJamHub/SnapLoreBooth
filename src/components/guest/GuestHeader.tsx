@@ -6,9 +6,9 @@ export type StepId = 'pilih' | 'bayar' | 'foto' | 'gaya' | 'cetak';
 
 const STEPS: { id: StepId; label: string }[] = [
   { id: 'pilih', label: 'Pilih' },
+  { id: 'gaya', label: 'Hias' },
   { id: 'bayar', label: 'Bayar' },
   { id: 'foto', label: 'Foto' },
-  { id: 'gaya', label: 'Hias' },
   { id: 'cetak', label: 'Cetak' },
 ];
 

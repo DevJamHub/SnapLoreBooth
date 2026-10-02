@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession, latestPayment } from '@/lib/db';
-import { ensurePayment, paymentsEnabled, publicPayment, refreshPayment } from '@/lib/payments';
+import { ensurePayment, publicPayment, refreshPayment, sessionUnlocked } from '@/lib/payments';
 import { XenditError, isTestMode } from '@/lib/xendit';
 
 export const dynamic = 'force-dynamic';
@@ -17,7 +17,9 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   const { id } = await params;
   const session = getSession(id);
   if (!session) return NextResponse.json({ error: 'session not found' }, { status: 404 });
-  if (!paymentsEnabled()) return NextResponse.json({ payment: null, required: false });
+  if (!session.requires_payment || (sessionUnlocked(id) && !latestPayment(id))) {
+    return NextResponse.json({ payment: null, required: false });
+  }
 
   try {
     const payment = await ensurePayment(session);
@@ -30,8 +32,9 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 /** What the payment screen polls: settles from Xendit when the webhook cannot reach us. */
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  if (!getSession(id)) return NextResponse.json({ error: 'session not found' }, { status: 404 });
-  if (!paymentsEnabled()) return NextResponse.json({ payment: null, required: false });
+  const session = getSession(id);
+  if (!session) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!session.requires_payment) return NextResponse.json({ payment: null, required: false });
 
   const current = latestPayment(id);
   if (!current) return NextResponse.json({ error: 'no payment issued yet' }, { status: 404 });

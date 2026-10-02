@@ -120,8 +120,7 @@ export default function PaymentStage({ session }: { session: Session }) {
     }
   };
 
-  const shots = `${session.shots} pose`;
-  const prints = `${session.prints} cetak`;
+  const prints = `${session.prints} lembar cetak`;
 
   return (
     <main className="g-screen">
@@ -161,7 +160,7 @@ export default function PaymentStage({ session }: { session: Session }) {
               <div>
                 <div className="pay-amount">{formatPrice(payment?.amount_idr ?? session.price_idr)}</div>
                 <p className="pay-summary" style={{ marginTop: 10 }}>
-                  {session.package_label} · {shots} · {prints}
+                  {session.package_label} · {prints}
                 </p>
               </div>
               <div className="pay-apps">

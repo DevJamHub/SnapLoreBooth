@@ -1,0 +1,10 @@
+# Caddy obtains and renews the HTTPS certificate on its own. Replace the domain with yours,
+# point its DNS A record at the VPS, then: sudo cp Caddyfile /etc/caddy/ && sudo systemctl reload caddy
+booth.example.com {
+	encode gzip
+	# Photos are uploaded as base64 JSON; a 4-shot session stays well under this.
+	request_body {
+		max_size 20MB
+	}
+	reverse_proxy 127.0.0.1:4300
+}

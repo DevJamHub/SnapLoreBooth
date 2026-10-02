@@ -153,7 +153,6 @@
   overflow: hidden;
   display: grid;
   place-items: center;
-  cursor: pointer;
   background:
     radial-gradient(ellipse 55% 45% at 22% 18%, rgba(204, 120, 92, 0.28), transparent 70%),
     radial-gradient(ellipse 50% 45% at 85% 88%, rgba(224, 168, 120, 0.2), transparent 70%),
@@ -249,7 +248,7 @@
 
 /* ---------- package picker ---------- */
 .pkg-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-lg); }
-.pkg-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.pkg-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .pkg-card {
   position: relative;
   display: flex;
@@ -297,18 +296,16 @@
   overflow: hidden;
 }
 .art-board {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: 5px;
-  padding: 7px 7px 18px;
+  width: 104px;
+  height: 156px;
+  padding: 7px 7px 20px;
   background: #f3eee8;
   border-radius: 4px;
   box-shadow: 0 16px 30px -12px rgba(0, 0, 0, 0.7);
   transform: rotate(-3deg);
 }
-.art-board[data-format='2x6'] { width: 58px; height: 168px; }
-.art-board[data-format='4x6'] { width: 116px; height: 168px; }
-.art-board[data-format='1x1'] { width: 138px; height: 152px; }
 .art-cell {
   flex: 1;
   border-radius: 2px;
@@ -319,12 +316,40 @@
 .art-cell:nth-child(2) { background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.4) 0 14%, transparent 15%), linear-gradient(160deg, #e0a878, #8f6a55); }
 .art-cell:nth-child(3) { background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.4) 0 14%, transparent 15%), linear-gradient(160deg, #8fae82, #4e5a48); }
 .art-cell:nth-child(4) { background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.4) 0 14%, transparent 15%), linear-gradient(160deg, #b9a0d0, #5c4f6b); }
+.art-cell:nth-child(5) { background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.4) 0 14%, transparent 15%), linear-gradient(160deg, #d9705f, #5e2d26); }
+.art-cell:nth-child(6) { background: radial-gradient(circle at 50% 42%, rgba(255, 255, 255, 0.4) 0 14%, transparent 15%), linear-gradient(160deg, #e8c48a, #7d6440); }
 
-.pkg-name { font-family: var(--font-display), serif; font-size: 30px; line-height: 1.1; }
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border);
+  background: var(--canvas);
+}
+.stepper-btn {
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  border: none;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+}
+.stepper-btn:active:not(:disabled) { transform: scale(0.94); }
+.stepper-btn:disabled { opacity: 0.35; }
+.stepper-label { display: flex; flex-direction: column; min-width: 150px; text-align: center; }
+.stepper-label b { font-size: 18px; }
+.stepper-label small { font-size: 13px; color: var(--muted); }
+
+.pkg-name { font-family: var(--font-display), serif; font-size: 28px; line-height: 1.1; }
 .pkg-blurb { font-size: 15px; line-height: 1.4; color: var(--muted); }
 .pkg-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .pkg-meta { font-size: 14px; color: var(--muted); font-weight: 500; }
-.pkg-price { font-family: var(--font-display), serif; font-size: 32px; color: var(--primary); line-height: 1; }
+.pkg-price { font-family: var(--font-display), serif; font-size: 28px; color: var(--primary); line-height: 1; }
 
 .addon {
   display: flex;
@@ -645,7 +670,11 @@
   from { transform: translateY(-40%); clip-path: inset(100% 0 0 0); }
   to { transform: translateY(0); clip-path: inset(0 0 0 0); }
 }
-.sh-side { display: flex; flex-direction: column; gap: 22px; min-height: 0; justify-content: center; }
+.sh-side { display: flex; flex-direction: column; gap: 22px; min-height: 0; overflow-y: auto; }
+/* Auto margins centre the column when there is room and collapse when there is not, so a tall
+   column scrolls from its top instead of spilling over the header and the bottom bar. */
+.sh-side > :first-child { margin-top: auto; }
+.sh-side > :last-child { margin-bottom: auto; }
 .sh-card {
   display: flex;
   align-items: center;
@@ -692,4 +721,266 @@
   .rv-board, .sh-print { height: 52vh; }
   .rv-options { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .g-bar { flex-wrap: wrap; border-radius: 28px; padding: 18px; }
+}
+
+/* ---------- printing (AirPrint to a 4x6in dye-sub such as the Canon SELPHY) ---------- */
+.print-only { display: none; }
+
+@media print {
+  @page { size: 4in 6in; margin: 0; }
+  html, body { background: #fff !important; height: auto !important; }
+  .g-screen, .standby, .cap { display: none !important; }
+  .print-only { display: block; }
+  .print-sheet {
+    width: 4in;
+    height: 6in;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    overflow: hidden;
+    background: #fff;
+    break-after: page;
+    page-break-after: always;
+  }
+  .print-sheet:last-child { break-after: auto; page-break-after: auto; }
+  .print-sheet img { display: block; width: 4in; height: 6in; object-fit: cover; }
+  .print-sheet[data-format='2x6'] img { width: 2in; height: 6in; object-fit: cover; }
+  .print-sheet[data-format='4x6'] img { width: 4in; height: 6in; object-fit: cover; }
+  .print-sheet[data-format='1x1'] img { width: 4in; height: 4in; object-fit: cover; }
+}
+
+/* ---------- live gallery (guests' phones) ---------- */
+.gal {
+  min-height: 100dvh;
+  padding: 28px 20px 48px;
+  background:
+    radial-gradient(ellipse 80% 30% at 50% 0%, rgba(204, 120, 92, 0.18), transparent 70%),
+    var(--canvas);
+}
+.gal-head { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; margin-bottom: 28px; }
+.gal-grid { columns: 5 150px; column-gap: 14px; max-width: 1200px; margin: 0 auto; }
+.gal-item {
+  display: block;
+  width: 100%;
+  margin: 0 0 14px;
+  padding: 0;
+  border: none;
+  background: none;
+  break-inside: avoid;
+  cursor: zoom-in;
+}
+.gal-item img { width: 100%; display: block; border-radius: 4px; box-shadow: 0 16px 30px -14px rgba(0, 0, 0, 0.8); }
+.gal-fresh img { animation: arrive 900ms cubic-bezier(0.2, 1.2, 0.4, 1); outline: 3px solid var(--primary); outline-offset: 3px; }
+@keyframes arrive { from { transform: translateY(-24px) scale(0.92); opacity: 0; } to { transform: none; opacity: 1; } }
+.gal-open { display: flex; flex-direction: column; gap: 16px; max-height: 92dvh; }
+.gal-open img, .gal-open video { max-height: 78dvh; max-width: 92vw; object-fit: contain; border-radius: 4px; }
+
+/* ---------- event screen: three guests' live sheets at a time ---------- */
+.stage {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding: 28px 40px 32px;
+  gap: 20px;
+  overflow: hidden;
+  cursor: none;
+  background:
+    radial-gradient(ellipse 60% 50% at 50% 40%, rgba(204, 120, 92, 0.16), transparent 70%),
+    var(--canvas);
+}
+.stage-head { display: flex; align-items: center; gap: 24px; }
+.stage-title { font-family: var(--font-display), serif; font-weight: 400; font-size: clamp(28px, 3.4vw, 52px); margin: 0; flex: 1; text-align: center; letter-spacing: -0.02em; }
+.stage-count { font-size: 18px; color: var(--muted); }
+.stage-side { display: flex; align-items: center; gap: 14px; }
+.stage-row {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--per-page, 3), minmax(0, 1fr));
+  justify-content: center;
+  gap: 28px;
+  transition: opacity 800ms ease, transform 800ms ease;
+}
+.stage-row[data-visible='false'] { opacity: 0; transform: scale(0.98); }
+.stage-row > p { grid-column: 1 / -1; }
+.stage-card { position: relative; min-height: 0; animation: fadeIn 800ms ease-out; }
+.stage-card .fit { inset: 0; }
+.stage-sheet {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  width: min(100cqw, calc(100cqh * 2 / 3));
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 40px 80px -24px rgba(0, 0, 0, 0.9);
+}
+.stage-sheet video, .stage-sheet img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.stage-new {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #1b1410;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+.stage-qr { display: flex; align-items: center; gap: 10px; max-width: 250px; }
+.stage-qr img { width: 64px; height: 64px; border-radius: 8px; background: #fff; padding: 4px; flex: none; }
+.stage-qr span { font-size: 13px; color: var(--muted); line-height: 1.3; }
+
+@media (max-width: 760px) {
+  .stage { padding: 20px 16px 24px; }
+  .stage-head { flex-direction: column; align-items: center; gap: 8px; }
+}
+
+/* ---------- capture: camera left, the sheet filling in on the right ---------- */
+.cap2 { gap: 18px; }
+/* Same height with or without a button, so the viewfinder never jumps between phases. */
+.cap2 .g-bar { min-height: 110px; }
+.cap2-clock {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 22px;
+  padding: 10px 18px;
+  border-radius: 999px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+}
+.cap2-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr); gap: 20px; }
+.cap2-camera, .cap2-sheet {
+  position: relative;
+  min-height: 0;
+  border-radius: 28px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.cap2-camera .fit { inset: 16px; }
+/* Room above the sheet for the retake hint, reserved in every phase so the sheet never moves. */
+.cap2-sheet .fit { inset: 50px 16px 16px; }
+.cap2-sheet-hint {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  right: 16px;
+  margin: 0;
+  text-align: center;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.cap2-sheet-hint[data-active='true'] { color: var(--text); }
+.cq { container-type: size; }
+.cap2-hint { font-size: 26px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* The viewfinder takes the photo slot's shape, so what the guest frames is what prints. */
+.vf { position: relative; overflow: hidden; border-radius: 18px; background: #000; }
+.vf-feed { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.vf-count { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
+.vf-count span {
+  font-family: var(--font-display), serif;
+  font-size: min(42cqh, 260px);
+  line-height: 1;
+  color: #fff;
+  text-shadow: 0 12px 60px rgba(0, 0, 0, 0.65);
+  animation: tick 1s ease-out;
+}
+.vf-rec {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(217, 112, 95, 0.92);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.vf-snap { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0, 0, 0, 0.45); animation: fadeIn 200ms ease-out; }
+.vf-snap img {
+  max-width: 80%;
+  max-height: 80%;
+  border: 10px solid #f3eee8;
+  border-bottom-width: 34px;
+  border-radius: 4px;
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.9);
+  animation: snapIn 520ms cubic-bezier(0.2, 1.2, 0.4, 1);
+}
+
+.sheet { position: relative; box-shadow: 0 24px 50px -18px rgba(0, 0, 0, 0.85); }
+.sheet img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border-radius: 3px; }
+.slot {
+  position: absolute;
+  padding: 0;
+  border: 3px solid transparent;
+  background: transparent;
+  display: grid;
+  place-items: center;
+  border-radius: 2px;
+  color: #fff;
+}
+.slot:not(:disabled) { cursor: pointer; }
+.slot:disabled { opacity: 1; }
+.slot[data-active='true'] { border-color: var(--primary); animation: slotPulse 1s ease-in-out infinite; }
+.slot[data-selected='true'] { border-color: #fff; box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.35), inset 0 0 0 2px rgba(0, 0, 0, 0.25); }
+@keyframes slotPulse { 50% { box-shadow: 0 0 0 6px rgba(204, 120, 92, 0.35); } }
+.slot-num { width: 40px; height: 40px; border-radius: 999px; background: rgba(24, 24, 22, 0.55); display: grid; place-items: center; font-weight: 700; }
+
+@media (orientation: portrait), (max-width: 900px) {
+  .cap2-body { grid-template-columns: 1fr; grid-auto-rows: 52vh 60vh; }
+}
+
+/* Live clips on the guest's phone: they loop like a GIF, silently. */
+.dl-clips { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; width: min(100%, 420px); }
+.dl-clips figure { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.dl-clips video { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 14px; background: #000; }
+.dl-clips a { font-size: 14px; color: var(--primary); text-decoration: none; font-weight: 600; }
+
+/* Progress of the live sheet being made for the QR page. */
+.sh-live-note { margin-top: 6px; color: var(--primary) !important; font-weight: 600; font-size: 15px; }
+.dl-live { display: flex; flex-direction: column; align-items: center; gap: 12px; width: min(100%, 420px); margin-top: 16px; }
+.dl-live video { width: 100%; max-height: 70vh; object-fit: contain; border-radius: 4px; box-shadow: 0 24px 50px -18px rgba(0, 0, 0, 0.85); background: #000; }
+.dl-live a { text-decoration: none; }
+
+/* ---------- short screens: Safari with its tab and address bars, or a smaller iPad ---------- */
+@media (max-height: 760px) and (orientation: landscape) {
+  .g-screen { padding: 16px 28px 18px; gap: 14px; }
+  .g-header { min-height: 46px; }
+  .g-step i { width: 26px; height: 26px; }
+  .g-title { font-size: clamp(30px, 3.4vw, 42px); }
+  .g-kicker { font-size: 12px; }
+  .g-cta { min-height: 62px; padding: 0 32px; font-size: 19px; }
+  .g-ghost { min-height: 50px; padding: 0 20px; font-size: 16px; }
+  .g-bar { padding: 8px 8px 8px 24px; gap: 16px; }
+  .g-bar-value { font-size: 28px; }
+  .cap2 .g-bar { min-height: 80px; }
+  .cap2-hint { font-size: 22px; }
+  .cap2-clock { font-size: 18px; padding: 6px 14px; }
+
+  .pkg-card { padding: 14px 14px 16px; gap: 8px; border-radius: 22px; }
+  .pkg-art { min-height: 70px; border-radius: 16px; }
+  .art-board { width: 74px; height: 110px; padding: 5px 5px 14px; gap: 4px; }
+  .pkg-name { font-size: 22px; }
+  .pkg-blurb { font-size: 13px; }
+  .pkg-price { font-size: 22px; }
+  .stepper-btn { width: 44px; height: 44px; font-size: 22px; }
+
+  .rv-side { gap: 14px; }
+  .rv-label { margin-bottom: 8px; }
+  .rv-thumb { border-radius: 14px; }
+
+  .pay-layout { gap: 32px; }
+  .pay-copy { gap: 14px; }
+  .pay-amount { font-size: 48px; }
+  .qr-card { width: min(100%, 330px); padding: 18px; border-radius: 26px; }
+
+  .sh-side { gap: 14px; }
+  .sh-card { padding: 14px 16px; gap: 16px; border-radius: 22px; }
+  .sh-card h3 { font-size: 20px; }
+  .sh-card p { font-size: 14px; }
+  .sh-qr { width: 120px; height: 120px; border-radius: 14px; padding: 7px; }
+  .sh-icon { width: 52px; height: 52px; border-radius: 16px; }
+  .addon { padding: 8px 14px 8px 8px; font-size: 15px; }
 }

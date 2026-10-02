@@ -42,6 +42,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     if (!TEMPLATES.some((t) => t.id === body.template)) return NextResponse.json({ error: 'unknown template' }, { status: 400 });
     patch.template = String(body.template);
   }
+  if (body.in_gallery !== undefined) {
+    if (typeof body.in_gallery !== 'boolean') return NextResponse.json({ error: 'in_gallery must be a boolean' }, { status: 400 });
+    patch.in_gallery = body.in_gallery;
+  }
   // The print count is fixed by what was paid for; the kiosk cannot raise it.
 
   const updated = updateSession(id, patch);
