@@ -52,8 +52,10 @@ export default function ShareStage({
 
       <div className="sh-layout">
         <div className="sh-print">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={stripUrl} alt="Hasil fotomu" />
+          <div className="fit">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={stripUrl} alt="Hasil fotomu" />
+          </div>
         </div>
 
         <div className="sh-side">

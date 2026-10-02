@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
+import BrowserCameraPanel from '@/components/BrowserCameraPanel';
 import type { CameraInfo, CameraSettings } from '@/lib/camera/types';
 
 type TestState = { kind: 'idle' } | { kind: 'firing' } | { kind: 'ok'; src: string; ms: number } | { kind: 'failed'; message: string };
@@ -73,7 +74,7 @@ export default function CameraConsole() {
             {loading ? 'Checking…' : 'Re-detect'}
           </button>
           <Link className="pill pill-ghost pill-sm" href="/operator" style={{ display: 'inline-flex', alignItems: 'center' }}>
-            Sessions
+            Konsol
           </Link>
         </div>
       </div>
@@ -99,6 +100,8 @@ export default function CameraConsole() {
             )}
           </div>
 
+          {info && !info.serverLiveView && <BrowserCameraPanel />}
+
           {info?.serverLiveView && (
             <div className="viewfinder">
               {info.ready ? (
@@ -114,6 +117,7 @@ export default function CameraConsole() {
           )}
         </section>
 
+        {info?.serverLiveView && (
         <section className="col-deck scroll">
           <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             <span className="mono">EXPOSURE ON THE BODY</span>
@@ -172,12 +176,13 @@ export default function CameraConsole() {
             {test.kind === 'failed' && <div className="notice notice-error">{test.message}</div>}
           </div>
 
-          {info?.serverLiveView && info.ready && (
+          {info.ready && (
             <button className="pill pill-ghost" onClick={() => setLiveKey((k) => k + 1)}>
               Restart live view
             </button>
           )}
         </section>
+        )}
       </div>
     </main>
   );

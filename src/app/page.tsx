@@ -7,13 +7,13 @@ import { useLongPress } from '@/components/guest/hooks';
 import { ArrowRight } from '@/components/guest/icons';
 import { PACKAGES, formatPrice } from '@/lib/packages';
 
+// Placed to keep the headline, the button and the bottom chips clear at iPad landscape sizes.
 const POLAROIDS = [
-  { left: '6%', top: '14%', r: '-9deg', d: '11s', delay: '0s', c1: '#cc785c', c2: '#5b3f33' },
-  { left: '15%', top: '58%', r: '7deg', d: '13s', delay: '-4s', c1: '#e0a878', c2: '#7a5a46' },
-  { left: '31%', top: '76%', r: '-4deg', d: '10s', delay: '-2s', c1: '#8fae82', c2: '#3f4c3a' },
-  { left: '73%', top: '9%', r: '8deg', d: '12s', delay: '-6s', c1: '#b9a0d0', c2: '#4f4560' },
-  { left: '83%', top: '47%', r: '-7deg', d: '14s', delay: '-1s', c1: '#d9705f', c2: '#5e2d26' },
-  { left: '64%', top: '72%', r: '5deg', d: '11s', delay: '-8s', c1: '#e8c48a', c2: '#7d6440' },
+  { left: '5%', top: '12%', r: '-9deg', d: '11s', delay: '0s', c1: '#cc785c', c2: '#5b3f33' },
+  { left: '13%', top: '52%', r: '7deg', d: '13s', delay: '-4s', c1: '#e0a878', c2: '#7a5a46' },
+  { left: '73%', top: '7%', r: '8deg', d: '12s', delay: '-6s', c1: '#b9a0d0', c2: '#4f4560' },
+  { left: '84%', top: '42%', r: '-7deg', d: '14s', delay: '-1s', c1: '#d9705f', c2: '#5e2d26' },
+  { left: '67%', top: '56%', r: '5deg', d: '11s', delay: '-8s', c1: '#8fae82', c2: '#3f4c3a' },
 ];
 
 const STATUS_POLL_MS = 60_000;

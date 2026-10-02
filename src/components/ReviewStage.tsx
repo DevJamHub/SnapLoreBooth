@@ -85,12 +85,14 @@ export default function ReviewStage({
 
       <div className="rv-layout">
         <div className="rv-board">
-          {preview ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img key={preview.length} src={preview} alt="Pratinjau hasil cetak" />
-          ) : (
-            <span className="g-lead">Menyusun fotomu…</span>
-          )}
+          <div className="fit">
+            {preview ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img key={preview.length} src={preview} alt="Pratinjau hasil cetak" />
+            ) : (
+              <span className="g-lead">Menyusun fotomu…</span>
+            )}
+          </div>
         </div>
 
         <div className="rv-side">

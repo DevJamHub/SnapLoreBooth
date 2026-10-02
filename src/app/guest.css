@@ -45,6 +45,7 @@
 .g-logo span { color: var(--primary); }
 .g-header-side { flex: 0 0 160px; display: flex; }
 .g-header-side:last-child { justify-content: flex-end; }
+.g-header-side .g-ghost { white-space: nowrap; }
 
 .g-steps { display: flex; align-items: center; gap: 10px; }
 .g-step { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 15px; font-weight: 500; }
@@ -93,6 +94,7 @@
   font-size: 22px;
   font-weight: 700;
   letter-spacing: 0.005em;
+  text-decoration: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -555,14 +557,19 @@
   gap: 36px;
 }
 .rv-board {
+  position: relative;
   min-height: 0;
   border-radius: 32px;
   background: var(--surface-1);
   border: 1px solid var(--border);
-  display: grid;
-  place-items: center;
-  padding: 24px;
   overflow: hidden;
+}
+.fit {
+  position: absolute;
+  inset: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .rv-board img {
   max-width: 100%;
@@ -620,13 +627,11 @@
   gap: 40px;
 }
 .sh-print {
+  position: relative;
   min-height: 0;
   border-radius: 32px;
   background: var(--surface-1);
   border: 1px solid var(--border);
-  display: grid;
-  place-items: center;
-  padding: 24px;
   overflow: hidden;
 }
 .sh-print img {
@@ -684,7 +689,7 @@
   .pkg-grid { grid-template-columns: 1fr; }
   .pkg-art { min-height: 180px; }
   .pay-layout, .rv-layout, .sh-layout { grid-template-columns: 1fr; gap: 28px; }
-  .rv-board, .sh-print { max-height: 52vh; }
+  .rv-board, .sh-print { height: 52vh; }
   .rv-options { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .g-bar { flex-wrap: wrap; border-radius: 28px; padding: 18px; }
 }

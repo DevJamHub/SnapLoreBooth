@@ -129,7 +129,7 @@ export default function PaymentStage({ session }: { session: Session }) {
         step="bayar"
         payments
         left={
-          !paid && (
+          paid ? undefined : (
             <button className="g-ghost" onClick={() => (pending && !expired ? setConfirmCancel(true) : router.replace('/'))}>
               <ArrowLeft /> Batal
             </button>

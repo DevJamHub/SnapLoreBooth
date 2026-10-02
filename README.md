@@ -1,8 +1,9 @@
 # SnaploreBooth
 
-A tablet photobooth kiosk — guests pick a format, the booth counts them down, composes a
-printable board, then prints it and hands it over by QR, email or SMS. Built for a 10–13"
-iPad in landscape on a booth stand, with a separate operator console on the same server.
+A tablet photobooth kiosk — guests pick a format, pay by QRIS, the booth counts them down
+through every pose on its own, they choose a look and a frame, and it prints the board and
+hands it over by QR. Built for a 10–13" iPad in landscape on a booth stand, with a hidden
+operator console on the same server. Guest screens are in Indonesian.
 
 Visual language follows the **Warm Editorial Tablet Studio** design system
 (Stitch asset `481f2491f6e546c8a61d82fb602eb6d4`): warm charcoal surfaces, terracotta
@@ -31,26 +32,44 @@ development; on a real booth serve it over HTTPS or the browser will refuse `get
 
 ## Guest flow
 
-| Route | What happens |
-| --- | --- |
-| `/` | Attract screen: pick Classic Strip 2x6 / Postcard 4x6 / Square 1:1, toggle add-ons, start |
-| `/pay/[id]` | QRIS code from Xendit; continues to capture on its own once the payment settles |
-| `/capture/[id]` | Live viewfinder, 4-second countdown per shot, film-stock preview, exposure, mirror, retake |
-| `/review/[id]` | Composes the board on canvas; pick film stock, frame, event mark, caption; auto-continues after 90s |
-| `/share/[id]` | Print queue with copy stepper, QR panel, email/SMS delivery with consent |
-| `/d/[id]` | What the QR opens: download the board and each individual frame |
-| `/operator` | Console: sessions today, prints, paper remaining, completed revenue, recent session table |
+Guest screens carry no telemetry, session ids or camera jargon: one decision per screen, big
+touch targets, and a step indicator (Pilih → Bayar → Foto → Hias → Cetak; *Bayar* disappears
+when payment is off). Every screen finds its own way back to standby.
+
+| Route | What happens | Returns to standby |
+| --- | --- | --- |
+| `/` | Standby: drifting polaroids, "Sentuh untuk mulai". A touch anywhere starts | — |
+| `/paket` | Pick Strip Klasik 2x6 / Kartu Pos 4x6 / Satu Potret 1:1, optional extra print | after 60s untouched |
+| `/pay/[id]` | QRIS from Xendit; moves on by itself once paid. *Batal* asks first while a code is live | 45s after the code expires |
+| `/capture/[id]` | Full-screen viewfinder. One tap starts; every pose then runs itself (5s, then 3s per pose) with a snapshot after each | — (paid) |
+| `/review/[id]` | *Hias*: pick a colour (filter) and a frame on the composed board | prints itself after 60s |
+| `/share/[id]` | Print progress, QR to save to a phone | 45s after printing |
+| `/d/[id]` | What the QR opens on the guest's phone: the board and each frame | — |
+
+Stills are saved exactly as the sensor saw them — not mirrored, not filtered. The look is
+applied once, when the board is composed, so it can never be applied twice. Filters are
+plain colour operations (`FILTERS` in `src/lib/packages.ts`) applied with `ctx.filter` where
+the browser supports it and pixel by pixel where it does not (Safari before 18).
+
+Add-ons are limited to what the booth actually delivers: today that is one extra print.
+
+### Booth settings
+
+```bash
+EVENT_NAME="Nikahan Rina & Dimas"   # printed under the photos on frames that carry a name
+PUBLIC_BASE_URL=https://booth.example.com   # where the take-home QR points; defaults to this host
+```
 
 ## API
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/status` | Booth telemetry: camera, paper, battery, printer, counts |
+| `GET` | `/api/status` | Paper estimate, printer state, counts; also runs the retention sweep |
 | `GET` `POST` | `/api/sessions` | List sessions / start one from a package + add-ons |
-| `GET` `PATCH` | `/api/sessions/[id]` | Read session with photos / update status, filter, template, prints |
+| `GET` `PATCH` | `/api/sessions/[id]` | Read session with photos (contact details withheld) / update status, filter, template. The print count is fixed by what was paid |
 | `POST` | `/api/sessions/[id]/photos` | Store one captured frame (`{index, dataUrl}`) |
-| `POST` | `/api/sessions/[id]/strip` | Store the composed board and mark the session ready |
-| `POST` | `/api/sessions/[id]/deliver` | Record an email/SMS delivery target |
+| `POST` | `/api/sessions/[id]/strip` | Store the composed board and send it to print (paid sessions only) |
+| `POST` | `/api/sessions/[id]/deliver` | Record an email/SMS delivery target (no guest screen uses it yet) |
 | `POST` `GET` | `/api/sessions/[id]/payment` | Issue (or reuse) the session's QRIS code / poll whether it is paid |
 | `POST` | `/api/sessions/[id]/payment/simulate` | Pay the current QR from the Xendit sandbox — development keys only |
 | `POST` | `/api/payments/xendit` | Xendit `qr.payment` webhook, verified by `x-callback-token` |
@@ -119,6 +138,13 @@ OPERATOR_PASSWORD=choose-something npm run dev:https
 
 With no `OPERATOR_PASSWORD` set the console returns 503 rather than falling back to a weak
 default. Any username is accepted; only the password is checked, in constant time.
+
+There is no operator button on the guest screens. **Press and hold the logo on the standby
+screen for 3 seconds** to open `/operator`; the browser then asks for the password. The
+console shows today's revenue from settled Xendit payments (not from sessions that reached
+the last screen), and `/operator/camera` is where the guest camera is chosen — the iPad's
+own, or a Canon through an HDMI capture card — and whether the preview is mirrored. Those
+two choices are saved on the device they are made on.
 
 ## Camera: tablet webcam or tethered body
 
@@ -238,12 +264,12 @@ RETENTION_HOURS=6 npm run dev   # shorter window for a one-night event
 
 ## Known limits
 
-- **Delivery is recorded, not sent.** `/api/sessions/[id]/deliver` validates and stores the
-  address; wiring a mail/SMS provider is a deployment step.
-- **Printing is deliberately out of scope.** The print queue advances on a timer and paper
-  level is derived from prints recorded today (`PAPER_ROLL_CAPACITY` in `src/lib/db.ts`).
-  Driving a real printer was dropped from the plan; the screens remain so the guest flow
-  stays whole.
+- **Printing is simulated.** The print screen advances on a timer (`SECONDS_PER_COPY` in
+  `ShareStage.tsx`) and paper level is derived from prints recorded today
+  (`PAPER_ROLL_CAPACITY` in `src/lib/db.ts`). The operator console says so.
+- **The take-home QR only works on the booth's network.** It points at this server unless
+  `PUBLIC_BASE_URL` is set, so a guest's phone must reach it — and trust its certificate.
+- **Email/SMS delivery has no guest screen.** The endpoint remains; nothing sends mail.
 - **The tethered path is verified only up to the macOS claim.** A real Canon EOS M50 has
   been attached and is correctly detected, and the readiness probe and every failure path
   were confirmed against it. Nothing beyond that is proven: no frame has been captured, so

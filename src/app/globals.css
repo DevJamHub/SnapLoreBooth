@@ -131,6 +131,8 @@ button, input { font-family: inherit; font-size: inherit; }
   box-shadow: var(--hairline);
 }
 .pill:hover:not(:disabled) { background: var(--primary-dim); }
+a.pill { text-decoration: none; color: #181816; }
+a.pill-ghost { color: var(--text); }
 .pill:active:not(:disabled) { transform: scale(0.98); }
 .pill:disabled { opacity: 0.45; cursor: not-allowed; }
 
