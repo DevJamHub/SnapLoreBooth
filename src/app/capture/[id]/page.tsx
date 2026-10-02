@@ -2,6 +2,7 @@ import { notFound, redirect } from 'next/navigation';
 import CaptureStage from '@/components/CaptureStage';
 import { getSession, listPhotos } from '@/lib/db';
 import { eventById } from '@/lib/events';
+import { frameForSession } from '@/lib/frames';
 import { sessionUnlocked } from '@/lib/payments';
 
 export const dynamic = 'force-dynamic';
@@ -24,6 +25,7 @@ export default async function CapturePage({ params }: { params: Promise<{ id: st
       payments={session.requires_payment}
       eventName={(session.event_id && eventById(session.event_id)?.name) || 'SnaploreBooth'}
       initialShots={initialShots}
+      frame={frameForSession(session)}
     />
   );
 }

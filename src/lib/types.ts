@@ -73,3 +73,19 @@ export interface BoothEvent {
   /** Set when the operator ends the event; the full photo gallery opens then. */
   ended_at: string | null;
 }
+
+/**
+ * A frame the operator designed elsewhere (Canva, Photoshop) and uploaded as a PNG. It is laid
+ * over the photos; its transparent holes are where the photos show through.
+ */
+export interface CustomFrame {
+  id: string;
+  name: string;
+  /** The package layout it was made for: grid6, grid4, stack3 or single. */
+  format: string;
+  /** Where each hole sits on the 1200x1800 sheet, in reading order. */
+  slots: { x: number; y: number; w: number; h: number; angle?: number }[];
+  /** Where a browser loads the PNG from. */
+  src: string;
+  created_at: string;
+}

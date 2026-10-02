@@ -2,10 +2,12 @@ import { headers } from 'next/headers';
 import Link from 'next/link';
 import QRCode from 'qrcode';
 import EventPanel from '@/components/EventPanel';
+import GuestDataPanel from '@/components/GuestDataPanel';
 import { boothStatus, listSessions, revenueToday } from '@/lib/db';
 import { currentEvent, priceOf } from '@/lib/events';
 import { ADDONS, PACKAGES, formatPrice } from '@/lib/packages';
 import { paymentsEnabled } from '@/lib/payments';
+import { PURGE_CONFIRMATION, RETENTION_HOURS, guestDataUsage } from '@/lib/retention';
 import { isTestMode } from '@/lib/xendit';
 
 export const dynamic = 'force-dynamic';
@@ -25,6 +27,7 @@ export default async function OperatorPage() {
   const payments = paymentsEnabled();
   const event = currentEvent();
   const prices = Object.fromEntries([...PACKAGES, ...ADDONS].map((item) => [item.id, priceOf(event, item.id)]));
+  const usage = await guestDataUsage();
 
   const headerList = await headers();
   const base =
@@ -41,6 +44,9 @@ export default async function OperatorPage() {
           <span className="mono">SNAPLOREBOOTH</span>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <Link className="pill pill-ghost pill-sm" href="/operator/frame" style={{ display: 'inline-flex', alignItems: 'center' }}>
+            Frame
+          </Link>
           <Link className="pill pill-ghost pill-sm" href="/operator/camera" style={{ display: 'inline-flex', alignItems: 'center' }}>
             Kamera
           </Link>
@@ -79,6 +85,7 @@ export default async function OperatorPage() {
       <div className="kiosk-body">
       <section className="col-deck scroll" style={{ flex: '0 0 400px' }}>
         <EventPanel event={event} prices={prices} galleryUrl={galleryUrl} galleryQr={galleryQr} xenditReady={!!process.env.XENDIT_SECRET_KEY} />
+        <GuestDataPanel sessions={usage.sessions} bytes={usage.bytes} retentionHours={RETENTION_HOURS} confirmWord={PURGE_CONFIRMATION} />
       </section>
       <div className="panel scroll" style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
         <h3 style={{ marginBottom: '0.75rem' }}>Sesi terakhir</h3>

@@ -2,6 +2,7 @@ import { notFound, redirect } from 'next/navigation';
 import StyleStage from '@/components/StyleStage';
 import { getSession, listPhotos } from '@/lib/db';
 import { eventById } from '@/lib/events';
+import { listFrames } from '@/lib/frames';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +19,7 @@ export default async function StylePage({ params }: { params: Promise<{ id: stri
       session={session}
       payments={session.requires_payment}
       eventName={(session.event_id && eventById(session.event_id)?.name) || 'SnaploreBooth'}
+      frames={listFrames(session.format)}
     />
   );
 }

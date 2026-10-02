@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession, listPhotos, updateSession } from '@/lib/db';
+import { frameById } from '@/lib/frames';
 import { FILTERS, TEMPLATES } from '@/lib/packages';
 import type { SessionStatus } from '@/lib/types';
 
@@ -17,7 +18,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  if (!getSession(id)) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  const session = getSession(id);
+  if (!session) return NextResponse.json({ error: 'session not found' }, { status: 404 });
 
   let body: Record<string, unknown>;
   try {
@@ -39,8 +41,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     patch.filter = String(body.filter);
   }
   if (body.template !== undefined) {
-    if (!TEMPLATES.some((t) => t.id === body.template)) return NextResponse.json({ error: 'unknown template' }, { status: 400 });
-    patch.template = String(body.template);
+    const templateId = String(body.template);
+    // A built-in frame fits every package; an uploaded one only the package it was drawn for.
+    const known = TEMPLATES.some((t) => t.id === templateId) || frameById(templateId)?.format === session.format;
+    if (!known) return NextResponse.json({ error: 'unknown template' }, { status: 400 });
+    patch.template = templateId;
   }
   if (body.in_gallery !== undefined) {
     if (typeof body.in_gallery !== 'boolean') return NextResponse.json({ error: 'in_gallery must be a boolean' }, { status: 400 });

@@ -7,15 +7,33 @@ import { formatClock, useCountdown } from '@/components/guest/hooks';
 import { ArrowLeft, ArrowRight } from '@/components/guest/icons';
 import { FILTERS, TEMPLATES, filterCss } from '@/lib/packages';
 import { composeStrip, placeholderCanvas } from '@/lib/strip';
-import type { Session } from '@/lib/types';
+import type { CustomFrame, Session } from '@/lib/types';
 
 /** Time to choose a frame and a look; the choice on screen is kept when it runs out. */
 const STYLE_SECONDS = 5 * 60;
 
-export default function StyleStage({ session, payments, eventName }: { session: Session; payments: boolean; eventName: string }) {
+/** The frame shown first: one already chosen, else the newest uploaded frame, else Klasik. */
+function initialTemplate(session: Session, frames: CustomFrame[]): string {
+  if (frames.some((f) => f.id === session.template)) return session.template;
+  if (frames.length > 0) return frames[0].id;
+  return TEMPLATES.some((t) => t.id === session.template) ? session.template : TEMPLATES[0].id;
+}
+
+export default function StyleStage({
+  session,
+  payments,
+  eventName,
+  frames,
+}: {
+  session: Session;
+  payments: boolean;
+  eventName: string;
+  frames: CustomFrame[];
+}) {
   const router = useRouter();
   const [filter, setFilter] = useState(FILTERS.some((f) => f.id === session.filter) ? session.filter : 'original');
-  const [template, setTemplate] = useState(TEMPLATES.some((t) => t.id === session.template) ? session.template : TEMPLATES[0].id);
+  const [template, setTemplate] = useState(() => initialTemplate(session, frames));
+  const frame = frames.find((f) => f.id === template) ?? null;
   const [preview, setPreview] = useState<string | null>(null);
   const [sample, setSample] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -31,7 +49,7 @@ export default function StyleStage({ session, payments, eventName }: { session: 
     let cancelled = false;
     composeStrip(
       Array.from({ length: session.shots }, () => null),
-      { format: session.format, filterId: filter, templateId: template, eventName, capturedAt: new Date() },
+      { format: session.format, filterId: filter, templateId: template, eventName, capturedAt: new Date(), frame },
       0.8,
     )
       .then((url) => !cancelled && setPreview(url))
@@ -39,7 +57,7 @@ export default function StyleStage({ session, payments, eventName }: { session: 
     return () => {
       cancelled = true;
     };
-  }, [filter, template, eventName, session.format, session.shots]);
+  }, [filter, template, frame, eventName, session.format, session.shots]);
 
   const next = async () => {
     if (busy) return;
@@ -95,6 +113,15 @@ export default function StyleStage({ session, payments, eventName }: { session: 
           <section>
             <div className="rv-label">Bingkai</div>
             <div className="rv-options">
+              {frames.map((f) => (
+                <button key={f.id} className="rv-option" aria-pressed={template === f.id} onClick={() => setTemplate(f.id)}>
+                  <span className="rv-thumb rv-thumb-frame">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={f.src} alt="" />
+                  </span>
+                  <span className="rv-name">{f.name}</span>
+                </button>
+              ))}
               {TEMPLATES.map((t) => (
                 <button key={t.id} className="rv-option" aria-pressed={template === t.id} onClick={() => setTemplate(t.id)}>
                   <span className="rv-thumb">

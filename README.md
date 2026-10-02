@@ -110,6 +110,29 @@ EVENT_NAME="SnaploreBooth"                  # only names the very first event on
 Guests can keep their own photo off the link from the print screen. The slug ends in random
 characters so the link cannot be guessed from the event name.
 
+## Custom frames
+
+Besides the built-in frames, the operator can upload their own design at **Konsol → Frame**
+(`/operator/frame`). A design is a 4R portrait image, 1200 × 1800 px, PNG or JPG, that marks
+where the photos go in one of two ways:
+
+- **Green boxes**: solid `#00FF00` rectangles. Free Canva can export these; the console keys
+  the green out (anti-aliased rims included) and stores a PNG with transparent holes.
+- **Transparent holes**: a PNG exported with a transparent background (Canva Pro,
+  Photoshop, Photopea).
+
+The holes can sit anywhere, at any size, tilted, or be non-rectangular (a circle gets its
+bounding box; the design masks the rest). The console traces them, numbers them in reading
+order, picks the package with that many photos (6, 4, 3 or 1) and shows a preview before
+saving. Each tilted photo is rotated to match its hole, on the print and in the live video.
+A design with a different number of holes, or the wrong shape, is refused with the reason.
+
+*Panduan ukuran* downloads a starting sheet per package with green boxes in the default
+positions, to use as the background in Canva. Uploaded frames are stored in `data/frames`
+and listed first, preselected, on the Hias screen of guests on that package. The design
+prints its own text, so the event name and date are not added. Deleting a frame (behind a
+confirmation) leaves sheets already made with it untouched.
+
 ## Printing: AirPrint to a Canon SELPHY
 
 With the event's printing set to **AirPrint**, the last screen shows *Cetak*: it opens the
@@ -190,6 +213,10 @@ the database and the photos.
 | `POST` | `/api/payments/xendit` | Xendit `qr.payment` webhook, verified by `x-callback-token` |
 | `GET` | `/api/media/[...path]` | Serve a stored photo or clip (byte ranges, for Safari video), or redirect to its signed R2 copy |
 | `PATCH` `POST` | `/api/operator/event` | Edit the running event, incl. `{ended}` / start a new one (operator only) |
+| `POST` | `/api/operator/frames` | Store an uploaded frame: form-data `file` (prepared PNG), `name`, `format`, `slots` (operator only) |
+| `DELETE` | `/api/operator/frames/[id]` | Delete an uploaded frame (operator only) |
+| `GET` | `/api/frames/[id]` | Serve an uploaded frame's PNG to guest screens |
+| `DELETE` | `/api/operator/sessions` | Delete every guest's photos, videos and session; body `{"confirm":"HAPUS"}` (operator only) |
 | `GET` | `/api/events/[slug]/gallery` | `{ ended, items }` for the event link; 404 when its gallery is off |
 | `GET` | `/manifest.webmanifest`, `/apple-icon`, `/pwa-icon/[size]` | What "Add to Home Screen" installs |
 
@@ -379,6 +406,13 @@ scheduler is needed. The share screen states the actual window.
 ```bash
 RETENTION_HOURS=6 npm run dev   # shorter window for a one-night event
 ```
+
+To wipe guest data now — test sessions before going live, or at a client's request — use
+**Data tamu → Hapus semua foto tamu** in the console. It shows what will be lost and asks the
+operator to type `HAPUS`. Every guest's photos, videos and session record go (QR links and the
+event gallery empty, today's stats return to 0); events, prices, frames and the Xendit
+dashboard's payment records stay. Guests at the booth right now — unfinished sessions under
+30 minutes old — are skipped.
 
 ## Known limits
 

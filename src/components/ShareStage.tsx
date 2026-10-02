@@ -6,7 +6,7 @@ import GuestHeader from '@/components/guest/GuestHeader';
 import { formatClock, useCountdown, useIdle } from '@/components/guest/hooks';
 import { Check, Phone, Printer, Retry } from '@/components/guest/icons';
 import { composeLive, type LiveSlot } from '@/lib/strip';
-import type { PrintMode, Session } from '@/lib/types';
+import type { CustomFrame, PrintMode, Session } from '@/lib/types';
 
 /** Seconds one copy takes in simulated mode, roughly a dye-sub printer. */
 const SECONDS_PER_COPY = 4;
@@ -34,6 +34,7 @@ export default function ShareStage({
   eventName,
   liveSlots,
   liveUrl: savedLiveUrl,
+  frame,
 }: {
   session: Session;
   stripUrl: string;
@@ -45,6 +46,7 @@ export default function ShareStage({
   eventName: string;
   liveSlots: LiveSlot[];
   liveUrl: string | null;
+  frame: CustomFrame | null;
 }) {
   const router = useRouter();
   const sheets = sheetsFor(session);
@@ -69,6 +71,7 @@ export default function ShareStage({
       templateId: session.template,
       eventName,
       capturedAt: new Date(session.created_at),
+      frame,
     })
       .then(async (blob) => {
         if (cancelled) return;

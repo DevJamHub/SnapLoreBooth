@@ -1,4 +1,5 @@
 import { FILTERS, TEMPLATES, filterCss, type FilterOp } from './packages';
+import type { CustomFrame } from './types';
 
 export interface StripOptions {
   format: string;
@@ -6,6 +7,8 @@ export interface StripOptions {
   templateId: string;
   eventName: string;
   capturedAt: Date;
+  /** An uploaded frame; it is used when templateId is its id. */
+  frame?: CustomFrame | null;
 }
 
 export interface Rect {
@@ -13,6 +16,8 @@ export interface Rect {
   y: number;
   w: number;
   h: number;
+  /** Degrees clockwise about the centre. Uploaded frames can hold tilted photos. */
+  angle?: number;
 }
 
 export interface BoardLayout {
@@ -45,7 +50,10 @@ function grid(cols: number, rows: number, margin: number, gap: number, footer: n
  * Where every photo sits on the sheet. The capture screen sizes its viewfinder from the
  * same slots, so what the guest frames is exactly what prints.
  */
-export function boardLayout(format: string, templateId: string, shots = 1): BoardLayout {
+export function boardLayout(format: string, templateId: string, shots = 1, frame?: CustomFrame | null): BoardLayout {
+  // An uploaded frame brings its own holes and prints its own text.
+  if (frame && frame.id === templateId && frame.format === format) return { ...SHEET, slots: frame.slots, footer: null };
+
   const template = TEMPLATES.find((t) => t.id === templateId) ?? TEMPLATES[0];
   const footer = template.eventMark || template.date ? 180 : 0;
   const margin = Math.round(52 * template.border);
@@ -180,8 +188,34 @@ function applyOps(data: Uint8ClampedArray, ops: FilterOp[]) {
   }
 }
 
+/** The uploaded frame these options select, if any. */
+function frameOf(options: StripOptions): CustomFrame | null {
+  const { frame } = options;
+  return frame && frame.id === options.templateId && frame.format === options.format ? frame : null;
+}
+
+/**
+ * Makes the slot the box (0,0)-(w,h) on ctx, tilted as the frame tilts it, and clips to it.
+ * Pair with ctx.restore().
+ */
+function enterSlot(ctx: CanvasRenderingContext2D, slot: Rect) {
+  ctx.save();
+  ctx.translate(slot.x + slot.w / 2, slot.y + slot.h / 2);
+  if (slot.angle) ctx.rotate((slot.angle * Math.PI) / 180);
+  ctx.translate(-slot.w / 2, -slot.h / 2);
+  ctx.beginPath();
+  ctx.rect(0, 0, slot.w, slot.h);
+  ctx.clip();
+}
+
 /** The sheet without photos: board colour, event name and date. Shared by stills and video. */
 function drawBoardBase(ctx: CanvasRenderingContext2D, layout: BoardLayout, options: StripOptions) {
+  // An uploaded frame covers the whole sheet; white only shows through a hole left unfilled.
+  if (frameOf(options)) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, layout.width, layout.height);
+    return;
+  }
   const template = TEMPLATES.find((t) => t.id === options.templateId) ?? TEMPLATES[0];
   ctx.fillStyle = template.board;
   ctx.fillRect(0, 0, layout.width, layout.height);
@@ -214,11 +248,13 @@ function drawBoardBase(ctx: CanvasRenderingContext2D, layout: BoardLayout, optio
  * draws a placeholder, so the same function previews a frame before any photo exists.
  */
 export async function composeStrip(sources: (string | null)[], options: StripOptions, quality = 0.92): Promise<string> {
-  const images: Drawable[] = await Promise.all(
-    sources.map((src, i) => (src ? loadImage(src) : Promise.resolve(placeholderCanvas(i)))),
-  );
+  const frame = frameOf(options);
+  const [images, overlay] = await Promise.all([
+    Promise.all(sources.map((src, i): Promise<Drawable> => (src ? loadImage(src) : Promise.resolve(placeholderCanvas(i))))),
+    frame ? loadImage(frame.src) : Promise.resolve(null),
+  ]);
   const ops = FILTERS.find((f) => f.id === options.filterId)?.ops ?? [];
-  const layout = boardLayout(options.format, options.templateId, images.length);
+  const layout = boardLayout(options.format, options.templateId, images.length, frame);
 
   const canvas = document.createElement('canvas');
   canvas.width = layout.width;
@@ -233,20 +269,29 @@ export async function composeStrip(sources: (string | null)[], options: StripOpt
   layout.slots.forEach((slot, i) => {
     const img = images[i];
     if (!img) return;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(slot.x, slot.y, slot.w, slot.h);
-    ctx.clip();
-    if (nativeFilter) ctx.filter = filterCss(options.filterId);
-    drawCover(ctx, img, slot.x, slot.y, slot.w, slot.h);
-    ctx.restore();
+    let picture: Drawable = img;
 
+    // Without canvas filters the look is applied to the cropped photo's own pixels first,
+    // so a tilted slot never re-filters a neighbour it overlaps.
     if (ops.length > 0 && !nativeFilter) {
-      const pixels = ctx.getImageData(slot.x, slot.y, slot.w, slot.h);
+      const crop = document.createElement('canvas');
+      crop.width = Math.round(slot.w);
+      crop.height = Math.round(slot.h);
+      const cropCtx = crop.getContext('2d')!;
+      drawCover(cropCtx, img, 0, 0, crop.width, crop.height);
+      const pixels = cropCtx.getImageData(0, 0, crop.width, crop.height);
       applyOps(pixels.data, ops);
-      ctx.putImageData(pixels, slot.x, slot.y);
+      cropCtx.putImageData(pixels, 0, 0);
+      picture = crop;
     }
+
+    enterSlot(ctx, slot);
+    if (nativeFilter) ctx.filter = filterCss(options.filterId);
+    drawCover(ctx, picture, 0, 0, slot.w, slot.h);
+    ctx.restore();
   });
+
+  if (overlay) ctx.drawImage(overlay, 0, 0, layout.width, layout.height);
 
   return canvas.toDataURL('image/jpeg', quality);
 }
@@ -297,7 +342,8 @@ export async function composeLive(slots: LiveSlot[], options: StripOptions, scal
   const mimeType = liveMimeType();
   if (!mimeType || !slots.some((s) => s.clip)) return null;
 
-  const layout = boardLayout(options.format, options.templateId, slots.length);
+  const frame = frameOf(options);
+  const layout = boardLayout(options.format, options.templateId, slots.length, frame);
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(layout.width * scale);
   canvas.height = Math.round(layout.height * scale);
@@ -316,9 +362,12 @@ export async function composeLive(slots: LiveSlot[], options: StripOptions, scal
   document.body.appendChild(holder);
 
   try {
-    const media: Drawable[] = await Promise.all(
-      slots.map((slot) => (slot.clip ? loadClip(slot.clip, holder).catch(() => loadImage(slot.still)) : loadImage(slot.still))),
-    );
+    const [media, overlay] = await Promise.all([
+      Promise.all(
+        slots.map((slot): Promise<Drawable> => (slot.clip ? loadClip(slot.clip, holder).catch(() => loadImage(slot.still)) : loadImage(slot.still))),
+      ),
+      frame ? loadImage(frame.src) : Promise.resolve(null),
+    ]);
     const videos = media.filter((m): m is HTMLVideoElement => m instanceof HTMLVideoElement);
     if (videos.length === 0) return null;
 
@@ -340,14 +389,12 @@ export async function composeLive(slots: LiveSlot[], options: StripOptions, scal
       layout.slots.forEach((slot, i) => {
         const src = media[i];
         if (!src) return;
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(slot.x, slot.y, slot.w, slot.h);
-        ctx.clip();
+        enterSlot(ctx, slot);
         if (useFilter) ctx.filter = filter;
-        drawCover(ctx, src, slot.x, slot.y, slot.w, slot.h);
+        drawCover(ctx, src, 0, 0, slot.w, slot.h);
         ctx.restore();
       });
+      if (overlay) ctx.drawImage(overlay, 0, 0, layout.width, layout.height);
     };
 
     draw();

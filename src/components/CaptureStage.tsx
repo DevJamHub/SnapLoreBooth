@@ -7,7 +7,7 @@ import { formatClock, useCountdown } from '@/components/guest/hooks';
 import { ArrowRight, Camera, Retry } from '@/components/guest/icons';
 import type { CameraInfo } from '@/lib/camera/types';
 import { boardLayout, composeStrip } from '@/lib/strip';
-import type { Session } from '@/lib/types';
+import type { CustomFrame, Session } from '@/lib/types';
 
 const POSES = [
   'Senyum paling manis!',
@@ -58,11 +58,14 @@ export default function CaptureStage({
   payments,
   eventName,
   initialShots,
+  frame,
 }: {
   session: Session;
   payments: boolean;
   eventName: string;
   initialShots: Record<number, string>;
+  /** The uploaded frame the guest chose in Hias; null for a built-in one. */
+  frame: CustomFrame | null;
 }) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -72,8 +75,10 @@ export default function CaptureStage({
   const autoFinish = useRef(false);
 
   const slots = useMemo(() => Array.from({ length: session.shots }, (_, i) => i + 1), [session.shots]);
-  const layout = useMemo(() => boardLayout(session.format, session.template, session.shots), [session.format, session.template, session.shots]);
-  const slotAspect = layout.slots[0].w / layout.slots[0].h;
+  const layout = useMemo(
+    () => boardLayout(session.format, session.template, session.shots, frame),
+    [session.format, session.template, session.shots, frame],
+  );
 
   const [camera, setCamera] = useState<CameraInfo | null>(null);
   const [cameraProblem, setCameraProblem] = useState<string | null>(null);
@@ -151,7 +156,7 @@ export default function CaptureStage({
     let cancelled = false;
     composeStrip(
       slots.map((n) => shots[n] ?? null),
-      { format: session.format, filterId: session.filter, templateId: session.template, eventName, capturedAt: new Date(session.created_at) },
+      { format: session.format, filterId: session.filter, templateId: session.template, eventName, capturedAt: new Date(session.created_at), frame },
       0.75,
     )
       .then((url) => !cancelled && setBoard(url))
@@ -159,7 +164,7 @@ export default function CaptureStage({
     return () => {
       cancelled = true;
     };
-  }, [shots, slots, session.format, session.filter, session.template, session.created_at, eventName]);
+  }, [shots, slots, session.format, session.filter, session.template, session.created_at, eventName, frame]);
 
   /** Starts recording the countdown, so every shot also gets its few seconds of video. */
   const startClip = useCallback(() => {
@@ -262,7 +267,7 @@ export default function CaptureStage({
       await Promise.race([clipChain.current, wait(CLIP_UPLOAD_WAIT_MS)]);
       const dataUrl = await composeStrip(
         slots.map((n) => shots[n]),
-        { format: session.format, filterId: session.filter, templateId: session.template, eventName, capturedAt: new Date(session.created_at) },
+        { format: session.format, filterId: session.filter, templateId: session.template, eventName, capturedAt: new Date(session.created_at), frame },
       );
       const res = await fetch(`/api/sessions/${session.id}/strip`, {
         method: 'POST',
@@ -275,7 +280,7 @@ export default function CaptureStage({
       setFailed(true);
       setPhase('review');
     }
-  }, [eventName, router, session.created_at, session.filter, session.format, session.id, session.template, shots, slots]);
+  }, [eventName, frame, router, session.created_at, session.filter, session.format, session.id, session.template, shots, slots]);
 
   const shoot = useCallback(async () => {
     const index = current;
@@ -341,6 +346,9 @@ export default function CaptureStage({
   };
 
   const shotNumber = current ?? slots.find((n) => !shots[n]) ?? session.shots;
+  // Uploaded frames can mix photo shapes, so the viewfinder takes the shape of the shot being taken.
+  const activeSlot = layout.slots[shotNumber - 1] ?? layout.slots[0];
+  const slotAspect = activeSlot.w / activeSlot.h;
   const pct = (v: number, of: number) => `${(v / of) * 100}%`;
 
   return (
@@ -397,7 +405,13 @@ export default function CaptureStage({
                     data-filled={!!shots[n]}
                     disabled={!canRetake}
                     onClick={() => tapSlot(n)}
-                    style={{ left: pct(slot.x, layout.width), top: pct(slot.y, layout.height), width: pct(slot.w, layout.width), height: pct(slot.h, layout.height) }}
+                    style={{
+                      left: pct(slot.x, layout.width),
+                      top: pct(slot.y, layout.height),
+                      width: pct(slot.w, layout.width),
+                      height: pct(slot.h, layout.height),
+                      transform: slot.angle ? `rotate(${slot.angle}deg)` : undefined,
+                    }}
                     aria-label={selected === n ? `Foto ${n} terpilih, klik lagi untuk retake` : shots[n] ? `Pilih foto ${n}` : `Foto ${n}`}
                   >
                     {!shots[n] && <span className="slot-num">{n}</span>}

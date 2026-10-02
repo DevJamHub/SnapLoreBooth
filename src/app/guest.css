@@ -642,6 +642,10 @@
 }
 .rv-swatch b { flex: 1; border-radius: 3px; background: linear-gradient(160deg, #cc785c, #6e6259); }
 .rv-swatch u { height: 10%; border-radius: 2px; text-decoration: none; opacity: 0.6; }
+/* An uploaded frame: the whole design, its photo holes showing the light card behind. */
+.rv-thumb-frame { background: #e9e4dd; }
+.rv-thumb-frame img { object-fit: contain; }
+.rv-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- share ---------- */
 .sh-layout {

@@ -5,8 +5,11 @@ import type { BoothStatus, Payment, Photo, Session, SessionStatus } from './type
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+/** Operator-uploaded frame PNGs. Not guest data, so retention and "hapus foto tamu" leave them. */
+export const FRAME_DIR = path.join(DATA_DIR, 'frames');
 
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(FRAME_DIR, { recursive: true });
 
 // Next dev reloads modules on every edit; keep one connection on globalThis.
 const globalForDb = globalThis as unknown as { __boothDb?: Database.Database };
@@ -62,6 +65,14 @@ function open(): Database.Database {
       gallery      INTEGER NOT NULL DEFAULT 1,
       print_mode   TEXT NOT NULL DEFAULT 'simulated',
       prices       TEXT NOT NULL DEFAULT '{}'
+    );
+    CREATE TABLE IF NOT EXISTS frames (
+      id         TEXT PRIMARY KEY,
+      name       TEXT NOT NULL,
+      format     TEXT NOT NULL,
+      file       TEXT NOT NULL,
+      slots      TEXT NOT NULL,
+      created_at TEXT NOT NULL
     );
   `);
   // `next build` opens the database from several workers at once. An IMMEDIATE transaction

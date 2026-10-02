@@ -1,0 +1,153 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { db, FRAME_DIR } from './db';
+import { PACKAGES } from './packages';
+import type { CustomFrame, Session } from './types';
+
+interface FrameRow {
+  id: string;
+  name: string;
+  format: string;
+  file: string;
+  slots: string;
+  created_at: string;
+}
+
+/** Holes are stored in the coordinates of the 4R sheet every board is composed on. */
+const SHEET = { width: 1200, height: 1800 };
+const MAX_FRAME_BYTES = 10 * 1024 * 1024;
+const MIN_FRAME_WIDTH = 600;
+const MIN_HOLE = 40;
+export const MAX_FRAME_NAME = 24;
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+export class FrameInputError extends Error {}
+
+function hydrate(row: FrameRow | undefined): CustomFrame | null {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    format: row.format,
+    slots: JSON.parse(row.slots) as CustomFrame['slots'],
+    src: `/api/frames/${row.id}`,
+    created_at: row.created_at,
+  };
+}
+
+/** Newest first, so a frame uploaded for tonight's event leads the list guests see. */
+export function listFrames(format?: string): CustomFrame[] {
+  const rows = (
+    format
+      ? db.prepare('SELECT * FROM frames WHERE format = ? ORDER BY created_at DESC').all(format)
+      : db.prepare('SELECT * FROM frames ORDER BY created_at DESC').all()
+  ) as FrameRow[];
+  return rows.map((r) => hydrate(r)!);
+}
+
+export function frameById(id: string): CustomFrame | null {
+  return hydrate(db.prepare('SELECT * FROM frames WHERE id = ?').get(id) as FrameRow | undefined);
+}
+
+/** The uploaded frame a session was styled with, while it still exists and fits the package. */
+export function frameForSession(session: Session): CustomFrame | null {
+  const frame = frameById(session.template);
+  return frame && frame.format === session.format ? frame : null;
+}
+
+/** Width and height from the IHDR chunk, which a PNG always opens with. */
+function pngSize(bytes: Uint8Array): { width: number; height: number } | null {
+  if (bytes.length < 24 || PNG_SIGNATURE.some((b, i) => bytes[i] !== b)) return null;
+  if (String.fromCharCode(...bytes.subarray(12, 16)) !== 'IHDR') return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return { width: view.getUint32(16), height: view.getUint32(20) };
+}
+
+function validSlots(raw: unknown, shots: number): CustomFrame['slots'] {
+  if (!Array.isArray(raw) || raw.length !== shots) {
+    throw new FrameInputError(`frame untuk paket ini butuh ${shots} lubang foto`);
+  }
+  return raw.map((slot) => {
+    const { x, y, w, h, angle } = (slot ?? {}) as Record<string, unknown>;
+    const rect = { x: Number(x), y: Number(y), w: Number(w), h: Number(h), angle: Number(angle ?? 0) };
+    const cx = rect.x + rect.w / 2;
+    const cy = rect.y + rect.h / 2;
+    // A tilted hole's box can poke past the sheet edge, so only its centre must be on the sheet.
+    const ok =
+      Object.values(rect).every(Number.isFinite) &&
+      rect.w >= MIN_HOLE &&
+      rect.h >= MIN_HOLE &&
+      rect.w <= SHEET.height &&
+      rect.h <= SHEET.height &&
+      cx >= 0 &&
+      cx <= SHEET.width &&
+      cy >= 0 &&
+      cy <= SHEET.height &&
+      Math.abs(rect.angle) <= 45;
+    if (!ok) throw new FrameInputError('posisi lubang foto tidak valid');
+    const tilt = Math.round(rect.angle * 10) / 10;
+    return {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      w: Math.round(rect.w),
+      h: Math.round(rect.h),
+      ...(tilt ? { angle: tilt } : {}),
+    };
+  });
+}
+
+/**
+ * Stores an uploaded frame. The holes are found in the operator's browser (it can decode the
+ * PNG); the server checks the file really is a 4R portrait PNG and the holes fit the package.
+ */
+export async function saveFrame(input: { name: string; format: string; slots: unknown; bytes: Uint8Array }): Promise<CustomFrame> {
+  const name = input.name.trim().slice(0, MAX_FRAME_NAME);
+  if (!name) throw new FrameInputError('nama frame wajib diisi');
+
+  const pkg = PACKAGES.find((p) => p.format === input.format);
+  if (!pkg) throw new FrameInputError('paket frame tidak dikenal');
+
+  if (input.bytes.byteLength > MAX_FRAME_BYTES) throw new FrameInputError('file frame maksimal 10 MB');
+  const size = pngSize(input.bytes);
+  if (!size) throw new FrameInputError('file harus PNG');
+  if (size.width < MIN_FRAME_WIDTH || Math.abs(size.width / size.height - 2 / 3) > 0.02) {
+    throw new FrameInputError(`ukuran harus 4R tegak (2:3), mis. 1200×1800 px — file ini ${size.width}×${size.height} px`);
+  }
+
+  const slots = validSlots(input.slots, pkg.shots);
+  const suffix = Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) => (b % 36).toString(36)).join('');
+  // Upper case keeps frame ids apart from the built-in frames' lower-case ids.
+  const id = `FR${Date.now().toString(36)}${suffix}`.toUpperCase();
+  const file = `${id}.png`;
+
+  await fs.writeFile(path.join(FRAME_DIR, file), input.bytes);
+  db.prepare('INSERT INTO frames (id, name, format, file, slots, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+    id,
+    name,
+    pkg.format,
+    file,
+    JSON.stringify(slots),
+    new Date().toISOString(),
+  );
+  return frameById(id)!;
+}
+
+/** Finished sheets keep their frame: it is already printed into them. */
+export async function deleteFrame(id: string): Promise<boolean> {
+  const row = db.prepare('SELECT * FROM frames WHERE id = ?').get(id) as FrameRow | undefined;
+  if (!row) return false;
+  db.prepare('DELETE FROM frames WHERE id = ?').run(id);
+  await fs.rm(path.join(FRAME_DIR, path.basename(row.file)), { force: true });
+  return true;
+}
+
+export async function readFrameFile(id: string): Promise<Buffer | null> {
+  const row = db.prepare('SELECT file FROM frames WHERE id = ?').get(id) as { file: string } | undefined;
+  if (!row) return null;
+  try {
+    return await fs.readFile(path.join(FRAME_DIR, path.basename(row.file)));
+  } catch {
+    return null;
+  }
+}

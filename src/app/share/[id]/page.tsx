@@ -4,6 +4,7 @@ import QRCode from 'qrcode';
 import ShareStage from '@/components/ShareStage';
 import { getSession, listPhotos } from '@/lib/db';
 import { eventById } from '@/lib/events';
+import { frameForSession } from '@/lib/frames';
 import { RETENTION_HOURS } from '@/lib/retention';
 
 export const dynamic = 'force-dynamic';
@@ -43,6 +44,7 @@ export default async function SharePage({ params }: { params: Promise<{ id: stri
       eventName={event?.name ?? 'SnaploreBooth'}
       liveSlots={liveSlots}
       liveUrl={session.live_file ? media(session.live_file) : null}
+      frame={frameForSession(session)}
     />
   );
 }

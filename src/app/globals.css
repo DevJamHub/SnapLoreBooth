@@ -433,3 +433,47 @@ a.pill-ghost { color: var(--text); }
   .col-main { flex: 1 1 auto; }
   .tiles, .stat-row { grid-template-columns: 1fr; }
 }
+
+/* ---------- destructive actions ---------- */
+.pill-danger { background: var(--danger); color: #181816; }
+.pill-danger:hover:not(:disabled) { background: var(--danger); filter: brightness(0.92); }
+.pill-danger-text { color: var(--danger); }
+
+/* ---------- uploaded frames ---------- */
+.frame-preview {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  width: 100%;
+  max-width: 320px;
+  align-self: center;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.frame-preview img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.frame-slot-num {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-full);
+  background: rgba(24, 24, 22, 0.75);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 15px;
+}
+.frame-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--space-md); }
+.frame-card { display: flex; flex-direction: column; gap: var(--space-xs); min-width: 0; }
+.frame-card b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Checks show through the holes, so the operator can see where photos go. */
+.frame-thumb {
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: repeating-conic-gradient(#d9d4cc 0% 25%, #f3eee8 0% 50%) 50% / 20px 20px;
+}
+.frame-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
