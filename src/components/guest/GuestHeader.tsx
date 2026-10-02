@@ -1,0 +1,60 @@
+'use client';
+
+import type { ReactNode } from 'react';
+
+export type StepId = 'pilih' | 'bayar' | 'foto' | 'gaya' | 'cetak';
+
+const STEPS: { id: StepId; label: string }[] = [
+  { id: 'pilih', label: 'Pilih' },
+  { id: 'bayar', label: 'Bayar' },
+  { id: 'foto', label: 'Foto' },
+  { id: 'gaya', label: 'Hias' },
+  { id: 'cetak', label: 'Cetak' },
+];
+
+export function Logo() {
+  return (
+    <span className="g-logo">
+      Snaplore<span>Booth</span>
+    </span>
+  );
+}
+
+/** Where the guest is in the five-step flow; the payment step disappears when the booth is free. */
+export function Steps({ current, payments }: { current: StepId; payments: boolean }) {
+  const steps = STEPS.filter((s) => payments || s.id !== 'bayar');
+  const at = steps.findIndex((s) => s.id === current);
+  return (
+    <nav className="g-steps" aria-label="Langkah">
+      {steps.map((step, i) => (
+        <span key={step.id} style={{ display: 'contents' }}>
+          {i > 0 && <span className="g-step-line" />}
+          <span className="g-step" data-state={i < at ? 'done' : i === at ? 'current' : 'todo'}>
+            <i>{i < at ? '✓' : i + 1}</i>
+            <b style={{ fontWeight: 'inherit' }}>{step.label}</b>
+          </span>
+        </span>
+      ))}
+    </nav>
+  );
+}
+
+export default function GuestHeader({
+  step,
+  payments,
+  left,
+  right,
+}: {
+  step: StepId;
+  payments: boolean;
+  left?: ReactNode;
+  right?: ReactNode;
+}) {
+  return (
+    <header className="g-header">
+      <div className="g-header-side">{left ?? <Logo />}</div>
+      <Steps current={step} payments={payments} />
+      <div className="g-header-side">{right}</div>
+    </header>
+  );
+}
