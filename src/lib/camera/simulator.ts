@@ -2,13 +2,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { UPLOAD_DIR } from '@/lib/db';
 import { MJPEG_BOUNDARY } from './types';
-import type { CameraInfo, CameraSettings, CameraSource, CaptureResult } from './types';
+import type { CameraInfo, CameraSettings, CameraSource, CameraStatus, CaptureResult } from './types';
 
 /** A 16x16 grey baseline JPEG — enough to prove the transport, not to look at. */
 const FRAME = Buffer.from(
   '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAAQABABAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==',
   'base64',
 );
+
+/** Pretend shutter lag, to rehearse the countdown's timing as a real body would play it. */
+const SHUTTER_MS = Number(process.env.SIMULATOR_SHUTTER_MS ?? 0);
+const DOWNLOAD_MS = SHUTTER_MS > 0 ? 400 : 0;
 
 /**
  * Stands in for a tethered body so the capture pipeline can be exercised without hardware.
@@ -41,7 +45,23 @@ export class SimulatorCamera implements CameraSource {
     return this.settings;
   }
 
-  async capture(sessionId: string, index: number): Promise<CaptureResult> {
+  /** A body as it often arrives: wrong dial, 16:9, sleeping after a minute. */
+  async status(): Promise<CameraStatus> {
+    return {
+      model: 'Simulated camera',
+      battery: '75%',
+      mode: 'AV',
+      aspect: '16:9',
+      autoPowerOff: '60',
+      imageFormat: 'M',
+      ...this.settings,
+    };
+  }
+
+  async capture(sessionId: string, index: number, onFired?: () => void): Promise<CaptureResult> {
+    if (SHUTTER_MS > 0) await new Promise((r) => setTimeout(r, SHUTTER_MS));
+    onFired?.();
+    if (DOWNLOAD_MS > 0) await new Promise((r) => setTimeout(r, DOWNLOAD_MS));
     const relative = path.join(sessionId, `shot-${index}.jpeg`);
     const target = path.join(UPLOAD_DIR, relative);
     await fs.mkdir(path.dirname(target), { recursive: true });

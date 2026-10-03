@@ -890,6 +890,9 @@
   text-shadow: 0 12px 60px rgba(0, 0, 0, 0.65);
   animation: tick 1s ease-out;
 }
+/* A tethered camera fires a moment after zero: guests hold the pose until the flash. */
+.vf-count .vf-hold { font-size: min(20cqh, 120px); animation: holdPulse 700ms ease-in-out infinite alternate; }
+@keyframes holdPulse { from { opacity: 1; transform: scale(1); } to { opacity: 0.75; transform: scale(0.94); } }
 .vf-rec {
   position: absolute;
   top: 14px;
@@ -938,6 +941,9 @@
 
 /* Live clips on the guest's phone: they loop like a GIF, silently. */
 .dl-clips { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; width: min(100%, 420px); }
+/* Files are stored as the sensor saw them; a mirrored session shows them as the guest did. */
+.dl-clips[data-mirror='true'] video,
+.dl-frames[data-mirror='true'] img { transform: scaleX(-1); }
 .dl-clips figure { margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .dl-clips video { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 14px; background: #000; }
 .dl-clips a { font-size: 14px; color: var(--primary); text-decoration: none; font-weight: 600; }

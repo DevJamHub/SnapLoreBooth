@@ -84,6 +84,8 @@ function open(): Database.Database {
     addColumn(db, 'photos', 'clip_file', 'clip_file TEXT');
     addColumn(db, 'sessions', 'live_file', 'live_file TEXT');
     addColumn(db, 'events', 'ended_at', 'ended_at TEXT');
+    addColumn(db, 'sessions', 'mirror', 'mirror INTEGER NOT NULL DEFAULT 0');
+    addColumn(db, 'events', 'mirror', 'mirror INTEGER NOT NULL DEFAULT 0');
   }).immediate();
   db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_event ON sessions(event_id, created_at DESC)');
   return db;
@@ -104,11 +106,12 @@ function addColumn(db: Database.Database, table: string, column: string, ddl: st
 export const db: Database.Database = globalForDb.__boothDb ?? open();
 if (process.env.NODE_ENV !== 'production') globalForDb.__boothDb = db;
 
-interface SessionRow extends Omit<Session, 'addons' | 'photo_count' | 'requires_payment' | 'in_gallery'> {
+interface SessionRow extends Omit<Session, 'addons' | 'photo_count' | 'requires_payment' | 'in_gallery' | 'mirror'> {
   addons: string;
   photo_count: number;
   requires_payment: number;
   in_gallery: number;
+  mirror: number;
 }
 
 function hydrate(row: SessionRow | undefined): Session | null {
@@ -118,6 +121,7 @@ function hydrate(row: SessionRow | undefined): Session | null {
     addons: JSON.parse(row.addons) as string[],
     requires_payment: row.requires_payment === 1,
     in_gallery: row.in_gallery === 1,
+    mirror: row.mirror === 1,
   };
 }
 
@@ -137,10 +141,11 @@ export function createSession(input: {
   prints: number;
   eventId: string;
   requiresPayment: boolean;
+  mirror: boolean;
 }): Session {
   db.prepare(
-    `INSERT INTO sessions (id, created_at, package_id, package_label, format, shots, price_idr, addons, prints, event_id, requires_payment)
-     VALUES (@id, @created_at, @package_id, @package_label, @format, @shots, @price_idr, @addons, @prints, @event_id, @requires_payment)`,
+    `INSERT INTO sessions (id, created_at, package_id, package_label, format, shots, price_idr, addons, prints, event_id, requires_payment, mirror)
+     VALUES (@id, @created_at, @package_id, @package_label, @format, @shots, @price_idr, @addons, @prints, @event_id, @requires_payment, @mirror)`,
   ).run({
     id: input.id,
     created_at: new Date().toISOString(),
@@ -153,6 +158,7 @@ export function createSession(input: {
     prints: input.prints,
     event_id: input.eventId,
     requires_payment: input.requiresPayment ? 1 : 0,
+    mirror: input.mirror ? 1 : 0,
   });
   return getSession(input.id)!;
 }

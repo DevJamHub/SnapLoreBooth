@@ -29,6 +29,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ settings: await source.applySettings(patch) });
   } catch (error) {
     const message = error instanceof Error ? error.message.split('\n')[0] : 'could not apply settings';
-    return NextResponse.json({ error: message }, { status: 502 });
+    // 409, not 502: a Cloudflare tunnel swaps an origin's 502 for its own HTML page, and the
+    // reason (the camera could not focus) would never reach the screen.
+    return NextResponse.json({ error: message }, { status: 409 });
   }
 }

@@ -50,6 +50,7 @@ export async function POST(request: Request) {
     eventId: event.id,
     // Nothing to collect on a zero total, even when the event takes QRIS.
     requiresPayment: paymentsEnabled() && priceIdr > 0,
+    mirror: event.mirror,
   });
 
   // The guest styles the frame before paying, so a session opens on the Hias step.

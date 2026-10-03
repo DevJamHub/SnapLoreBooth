@@ -1,9 +1,19 @@
+import { existsSync } from 'node:fs';
 import { FolderCamera } from './folder';
 import { Gphoto2Camera } from './gphoto2';
 import { SimulatorCamera } from './simulator';
 import type { CameraBackend, CameraInfo, CameraSource } from './types';
 
-const CONFIGURED = (process.env.CAMERA_SOURCE ?? 'browser') as CameraBackend;
+/** Where Homebrew, Linux packages and a custom build put gphoto2. */
+const GPHOTO2_PATHS = [process.env.GPHOTO2_BIN, '/opt/homebrew/bin/gphoto2', '/usr/local/bin/gphoto2', '/usr/bin/gphoto2'];
+
+/**
+ * Unset, the server offers a tethered Canon whenever gphoto2 is installed. Offering is all it
+ * does: each device shoots with its own camera until the operator detects the Canon and picks
+ * it in Konsol → Kamera. A VPS without gphoto2 stays browser-only.
+ */
+const CONFIGURED = (process.env.CAMERA_SOURCE ??
+  (GPHOTO2_PATHS.some((p) => p && existsSync(p)) ? 'gphoto2' : 'browser')) as CameraBackend;
 
 const globalForCamera = globalThis as unknown as { __boothCamera?: CameraSource };
 

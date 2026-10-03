@@ -2,8 +2,9 @@ import { db } from './db';
 import { ADDONS, PACKAGES } from './packages';
 import type { BoothEvent, PaymentMode, PrintMode } from './types';
 
-interface EventRow extends Omit<BoothEvent, 'gallery' | 'prices'> {
+interface EventRow extends Omit<BoothEvent, 'gallery' | 'prices' | 'mirror'> {
   gallery: number;
+  mirror: number;
   prices: string;
 }
 
@@ -13,7 +14,7 @@ const MAX_PRICE_IDR = 10_000_000;
 
 function hydrate(row: EventRow | undefined): BoothEvent | null {
   if (!row) return null;
-  return { ...row, gallery: row.gallery === 1, prices: JSON.parse(row.prices) as Record<string, number> };
+  return { ...row, gallery: row.gallery === 1, mirror: row.mirror === 1, prices: JSON.parse(row.prices) as Record<string, number> };
 }
 
 /** Slugs end in random characters: a gallery link should not be guessable from the event name. */
@@ -55,8 +56,8 @@ export function startEvent(input: { name: string; paymentMode?: PaymentMode; gal
   // Only one event runs at a time: starting the next one ends the last, opening its gallery.
   db.prepare('UPDATE events SET ended_at = ? WHERE ended_at IS NULL').run(new Date().toISOString());
   db.prepare(
-    `INSERT INTO events (id, slug, name, created_at, payment_mode, gallery, print_mode, prices)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO events (id, slug, name, created_at, payment_mode, gallery, print_mode, prices, mirror)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     makeSlug(input.name),
@@ -67,6 +68,7 @@ export function startEvent(input: { name: string; paymentMode?: PaymentMode; gal
     input.printMode ?? previous?.print_mode ?? 'simulated',
     // A new gig starts from the last one's prices; the operator rarely changes them.
     JSON.stringify(previous?.prices ?? defaultPrices()),
+    previous?.mirror ? 1 : 0,
   );
   return eventById(id)!;
 }
@@ -97,6 +99,8 @@ export function updateEvent(id: string, body: Record<string, unknown>): BoothEve
   if (!PRINT_MODES.includes(printMode)) throw new EventInputError('mode cetak tidak dikenal');
 
   const gallery = body.gallery === undefined ? event.gallery : body.gallery === true;
+  if (body.mirror !== undefined && typeof body.mirror !== 'boolean') throw new EventInputError('mirror harus true/false');
+  const mirror = body.mirror === undefined ? event.mirror : body.mirror === true;
   // `ended: true` closes the event and opens its gallery; `false` reopens one ended by mistake.
   const endedAt =
     body.ended === undefined ? event.ended_at : body.ended === true ? (event.ended_at ?? new Date().toISOString()) : null;
@@ -120,8 +124,8 @@ export function updateEvent(id: string, body: Record<string, unknown>): BoothEve
   }
 
   db.prepare(
-    `UPDATE events SET name = ?, payment_mode = ?, gallery = ?, print_mode = ?, prices = ?, ended_at = ? WHERE id = ?`,
-  ).run(name, paymentMode, gallery ? 1 : 0, printMode, JSON.stringify(prices), endedAt, id);
+    `UPDATE events SET name = ?, payment_mode = ?, gallery = ?, print_mode = ?, prices = ?, ended_at = ?, mirror = ? WHERE id = ?`,
+  ).run(name, paymentMode, gallery ? 1 : 0, printMode, JSON.stringify(prices), endedAt, mirror ? 1 : 0, id);
   return eventById(id)!;
 }
 

@@ -72,7 +72,7 @@ export class FolderCamera implements CameraSource {
   }
 
   /** Waits for a file newer than everything already present, then moves it into the session. */
-  async capture(sessionId: string, index: number): Promise<CaptureResult> {
+  async capture(sessionId: string, index: number, onFired?: () => void): Promise<CaptureResult> {
     await fs.mkdir(WATCH_DIR, { recursive: true });
     const before = new Map((await this.listImages()).map((f) => [f.name, f.mtimeMs]));
     const deadline = Date.now() + TIMEOUT_MS;
@@ -84,6 +84,11 @@ export class FolderCamera implements CameraSource {
         .sort((a, b) => b.mtimeMs - a.mtimeMs);
 
       if (fresh.length > 0) {
+        if (onFired) {
+          // A new file means the other app's shutter has fired.
+          onFired();
+          onFired = undefined;
+        }
         const source = path.join(WATCH_DIR, fresh[0].name);
         // A camera writing a 6MB JPEG over USB appears in the directory before it is
         // complete, so wait for the size to stop changing before touching it.

@@ -51,5 +51,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/operator', '/operator/:path*', '/api/operator/:path*', '/api/sessions', '/api/camera/settings', '/api/camera/test'],
+  matcher: ['/operator', '/operator/:path*', '/api/operator/:path*', '/api/sessions', '/api/camera/settings', '/api/camera/test', '/api/camera/status'],
 };

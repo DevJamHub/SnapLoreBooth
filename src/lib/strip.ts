@@ -9,6 +9,8 @@ export interface StripOptions {
   capturedAt: Date;
   /** An uploaded frame; it is used when templateId is its id. */
   frame?: CustomFrame | null;
+  /** Flip every photo left to right, as the guest saw them in a mirrored preview. */
+  mirror?: boolean;
 }
 
 export interface Rect {
@@ -198,7 +200,7 @@ function frameOf(options: StripOptions): CustomFrame | null {
  * Makes the slot the box (0,0)-(w,h) on ctx, tilted as the frame tilts it, and clips to it.
  * Pair with ctx.restore().
  */
-function enterSlot(ctx: CanvasRenderingContext2D, slot: Rect) {
+function enterSlot(ctx: CanvasRenderingContext2D, slot: Rect, mirror = false) {
   ctx.save();
   ctx.translate(slot.x + slot.w / 2, slot.y + slot.h / 2);
   if (slot.angle) ctx.rotate((slot.angle * Math.PI) / 180);
@@ -206,6 +208,10 @@ function enterSlot(ctx: CanvasRenderingContext2D, slot: Rect) {
   ctx.beginPath();
   ctx.rect(0, 0, slot.w, slot.h);
   ctx.clip();
+  if (mirror) {
+    ctx.translate(slot.w, 0);
+    ctx.scale(-1, 1);
+  }
 }
 
 /** The sheet without photos: board colour, event name and date. Shared by stills and video. */
@@ -285,7 +291,7 @@ export async function composeStrip(sources: (string | null)[], options: StripOpt
       picture = crop;
     }
 
-    enterSlot(ctx, slot);
+    enterSlot(ctx, slot, options.mirror);
     if (nativeFilter) ctx.filter = filterCss(options.filterId);
     drawCover(ctx, picture, 0, 0, slot.w, slot.h);
     ctx.restore();
@@ -389,7 +395,7 @@ export async function composeLive(slots: LiveSlot[], options: StripOptions, scal
       layout.slots.forEach((slot, i) => {
         const src = media[i];
         if (!src) return;
-        enterSlot(ctx, slot);
+        enterSlot(ctx, slot, options.mirror);
         if (useFilter) ctx.filter = filter;
         drawCover(ctx, src, 0, 0, slot.w, slot.h);
         ctx.restore();

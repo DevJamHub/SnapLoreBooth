@@ -72,6 +72,7 @@ export default function ShareStage({
       eventName,
       capturedAt: new Date(session.created_at),
       frame,
+      mirror: session.mirror,
     })
       .then(async (blob) => {
         if (cancelled) return;

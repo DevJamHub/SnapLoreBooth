@@ -38,7 +38,7 @@ export default async function DownloadPage({ params }: { params: Promise<{ id: s
       {clips.length > 0 && (
         <>
           <p className="g-kicker" style={{ marginTop: 16 }}>Video per foto · {clips.length}</p>
-          <div className="dl-clips">
+          <div className="dl-clips" data-mirror={session.mirror}>
             {clips.map((photo) => (
               <figure key={photo.id}>
                 <LoopVideo src={mediaUrl(photo.clip_file!)} poster={mediaUrl(photo.file)} />
@@ -54,7 +54,7 @@ export default async function DownloadPage({ params }: { params: Promise<{ id: s
       {photos.length > 1 && (
         <>
           <p className="g-kicker" style={{ marginTop: 16 }}>Foto satuan</p>
-          <div className="dl-frames">
+          <div className="dl-frames" data-mirror={session.mirror}>
             {photos.map((photo) => (
               <a key={photo.id} href={mediaUrl(photo.file)} download={`snaplorebooth-${session.id}-${photo.idx}.jpeg`}>
                 {/* eslint-disable-next-line @next/next/no-img-element */}

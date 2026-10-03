@@ -22,6 +22,12 @@ export interface Session {
   /** Fixed when the session starts, so changing the event's payment mode never strands a guest. */
   requires_payment: boolean;
   in_gallery: boolean;
+  /**
+   * Photos and clips are stored as the sensor saw them; when true, every place they are shown
+   * or composed flips them, so the guest's mirrored preview and the result match. Taken from
+   * the event when the session starts, so a sheet never mixes the two.
+   */
+  mirror: boolean;
 }
 
 export interface Photo {
@@ -72,6 +78,8 @@ export interface BoothEvent {
   prices: Record<string, number>;
   /** Set when the operator ends the event; the full photo gallery opens then. */
   ended_at: string | null;
+  /** New sessions mirror preview and result alike; see Session.mirror. */
+  mirror: boolean;
 }
 
 /**

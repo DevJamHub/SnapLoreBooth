@@ -18,7 +18,8 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     await simulateQrPayment(current.id, current.amount_idr);
     return NextResponse.json({ payment: publicPayment(await refreshPayment(current)) });
   } catch (error) {
-    if (error instanceof XenditError) return NextResponse.json({ error: error.message }, { status: 502 });
+    // Not 502: a Cloudflare tunnel would swap it for its own HTML page.
+    if (error instanceof XenditError) return NextResponse.json({ error: error.message }, { status: 503 });
     throw error;
   }
 }

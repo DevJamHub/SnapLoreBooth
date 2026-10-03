@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { CAMERA_DEVICE_KEY, MIRROR_KEY } from '@/components/CaptureStage';
+import { CAMERA_DEVICE_KEY } from '@/components/CaptureStage';
 
 function read(key: string): string | null {
   try {
@@ -21,19 +21,17 @@ function write(key: string, value: string) {
 
 /**
  * Picks which camera the kiosk uses — the iPad's own, or the Canon through an HDMI capture
- * card — and whether the guest preview is mirrored. Saved on this device, which is the one
- * the guests use.
+ * card. Saved on this device, which is the one the guests use. The preview is mirrored as the
+ * event's setting says, exactly as guests will see it.
  */
-export default function BrowserCameraPanel() {
+export default function BrowserCameraPanel({ mirror }: { mirror: boolean }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [deviceId, setDeviceId] = useState('');
-  const [mirrored, setMirrored] = useState(true);
   const [problem, setProblem] = useState<string | null>(null);
 
   useEffect(() => {
     setDeviceId(read(CAMERA_DEVICE_KEY) ?? '');
-    setMirrored(read(MIRROR_KEY) !== 'false');
   }, []);
 
   useEffect(() => {
@@ -89,17 +87,6 @@ export default function BrowserCameraPanel() {
             ))}
           </select>
         </label>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={mirrored}
-            onChange={(e) => {
-              setMirrored(e.target.checked);
-              write(MIRROR_KEY, String(e.target.checked));
-            }}
-          />
-          <span style={{ fontSize: 14 }}>Preview seperti cermin (hasil foto tetap tidak terbalik)</span>
-        </label>
         {resolution?.width && (
           <span className="mono mono-sm">
             RESOLUSI {resolution.width}×{resolution.height}
@@ -111,7 +98,7 @@ export default function BrowserCameraPanel() {
         </p>
       </div>
       <div className="viewfinder">
-        <video ref={videoRef} autoPlay playsInline muted style={{ transform: mirrored ? 'scaleX(-1)' : undefined }} />
+        <video ref={videoRef} autoPlay playsInline muted style={{ transform: mirror ? 'scaleX(-1)' : undefined }} />
       </div>
     </>
   );

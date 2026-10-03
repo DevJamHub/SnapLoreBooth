@@ -477,3 +477,21 @@ a.pill-ghost { color: var(--text); }
   background: repeating-conic-gradient(#d9d4cc 0% 25%, #f3eee8 0% 50%) 50% / 20px 20px;
 }
 .frame-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+/* ---------- camera calibration ---------- */
+.calib-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-xs); }
+.calib-list li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px 10px 36px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  font-size: 14px;
+}
+.calib-list li span { color: var(--muted); font-size: 13px; }
+.calib-list li::before { position: absolute; left: 13px; top: 9px; font-weight: 700; }
+.calib-list li[data-level='ok']::before { content: '✓'; color: var(--ok); }
+.calib-list li[data-level='warn']::before { content: '!'; color: var(--secondary); }
+.calib-list li[data-level='bad']::before { content: '✕'; color: var(--danger); }

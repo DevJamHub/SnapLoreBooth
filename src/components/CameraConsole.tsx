@@ -3,30 +3,101 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import BrowserCameraPanel from '@/components/BrowserCameraPanel';
+import CameraCalibration, { fireTestShot } from '@/components/CameraCalibration';
+import { CAMERA_SOURCE_KEY, type CameraSourceChoice } from '@/components/CaptureStage';
+import MirrorPanel from '@/components/MirrorPanel';
 import type { CameraInfo, CameraSettings } from '@/lib/camera/types';
+import { readJson } from '@/lib/readJson';
 
 type TestState = { kind: 'idle' } | { kind: 'firing' } | { kind: 'ok'; src: string; ms: number } | { kind: 'failed'; message: string };
 
-export default function CameraConsole() {
+function readChoice(): CameraSourceChoice {
+  try {
+    return localStorage.getItem(CAMERA_SOURCE_KEY) === 'canon' ? 'canon' : 'device';
+  } catch {
+    return 'device';
+  }
+}
+
+function saveChoice(value: CameraSourceChoice) {
+  try {
+    localStorage.setItem(CAMERA_SOURCE_KEY, value);
+  } catch {
+    // Blocked storage: the choice holds for this page only.
+  }
+}
+
+/**
+ * Which camera this device's booth screen shoots with. Its own camera is the default; the
+ * external Canon is used only once it has been detected ready, and is calibrated here.
+ */
+export default function CameraConsole({ initialMirror }: { initialMirror: boolean }) {
+  const [mirror, setMirror] = useState(initialMirror);
+  const [choice, setChoice] = useState<CameraSourceChoice>('device');
   const [info, setInfo] = useState<CameraInfo | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [detecting, setDetecting] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  /** The camera's own words, for whoever has to fix it. */
+  const [problemDetail, setProblemDetail] = useState<string | null>(null);
   const [test, setTest] = useState<TestState>({ kind: 'idle' });
   const [saving, setSaving] = useState<string | null>(null);
   const [liveKey, setLiveKey] = useState(0);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  /** Asks the server for the external camera. Only a body that answers ready is returned. */
+  const detect = useCallback(async (): Promise<CameraInfo | null> => {
+    setDetecting(true);
+    setProblem(null);
+    setProblemDetail(null);
     try {
       const res = await fetch('/api/camera', { cache: 'no-store' });
-      setInfo((await res.json()) as CameraInfo);
+      const data = await readJson<CameraInfo>(res);
+      if (data.error) throw new Error(data.error);
+      if (!data.serverLiveView) {
+        setInfo(null);
+        setProblem('Server ini belum bisa memakai kamera eksternal: gphoto2 belum terpasang (brew install gphoto2), lalu restart server.');
+        return null;
+      }
+      setInfo(data);
+      if (!data.ready) {
+        setProblem(
+          data.model
+            ? `${data.model} terdeteksi tapi belum bisa dipakai.`
+            : 'Canon tidak terdeteksi. Nyalakan Canon (tekan rana setengah kalau sedang tidur), cek kabel USB ke server, lalu deteksi lagi.',
+        );
+        setProblemDetail(data.message);
+        return null;
+      }
+      return data;
+    } catch (err) {
+      setProblem(err instanceof Error ? err.message : 'Server tidak menjawab.');
+      return null;
     } finally {
-      setLoading(false);
+      setDetecting(false);
     }
   }, []);
 
+  // A device already set to the Canon checks it is still there.
   useEffect(() => {
-    void load();
-  }, [load]);
+    const saved = readChoice();
+    setChoice(saved);
+    if (saved === 'canon') void detect();
+  }, [detect]);
+
+  const chooseDevice = () => {
+    setChoice('device');
+    saveChoice('device');
+    setProblem(null);
+    setProblemDetail(null);
+    setTest({ kind: 'idle' });
+  };
+
+  /** Detect first; switch this device to the Canon only if it answered ready. */
+  const chooseCanon = async () => {
+    if (await detect()) {
+      setChoice('canon');
+      saveChoice('canon');
+    }
+  };
 
   const setSetting = async (name: keyof CameraSettings, value: string) => {
     setSaving(name);
@@ -36,7 +107,7 @@ export default function CameraConsole() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ [name]: value }),
       });
-      const data = (await res.json()) as { settings?: CameraSettings; error?: string };
+      const data = await readJson<{ settings?: CameraSettings }>(res);
       if (data.settings && info) setInfo({ ...info, settings: data.settings });
     } finally {
       setSaving(null);
@@ -45,143 +116,142 @@ export default function CameraConsole() {
 
   const fireTest = async () => {
     setTest({ kind: 'firing' });
-    const started = performance.now();
     try {
-      const res = await fetch('/api/camera/test', { method: 'POST' });
-      const data = (await res.json()) as { file?: string; ms?: number; error?: string };
-      if (!res.ok || !data.file) throw new Error(data.error ?? 'the camera did not return a frame');
-      setTest({
-        kind: 'ok',
-        src: `/api/media/${data.file.split('/').map(encodeURIComponent).join('/')}?t=${Date.now()}`,
-        ms: data.ms ?? Math.round(performance.now() - started),
-      });
+      const shot = await fireTestShot();
+      setTest({ kind: 'ok', src: shot.src, ms: Math.round(shot.lagMs) });
     } catch (err) {
       setTest({ kind: 'failed', message: err instanceof Error ? err.message : 'capture failed' });
     }
   };
 
-  const dot = info?.ready ? 'dot dot-ok' : 'dot dot-bad';
+  const canon = choice === 'canon' && info?.ready === true;
 
   return (
     <main className="kiosk">
       <div className="topbar">
         <div className="brand">
-          <strong>Camera</strong>
-          <span className="mono">TETHER DIAGNOSTICS</span>
+          <strong>Kamera</strong>
+          <span className="mono">BOOTH</span>
         </div>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="pill pill-ghost pill-sm" onClick={load} disabled={loading}>
-            {loading ? 'Checking…' : 'Re-detect'}
+        <Link className="pill pill-ghost pill-sm" href="/operator" style={{ display: 'inline-flex', alignItems: 'center' }}>
+          Konsol
+        </Link>
+      </div>
+
+      <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+        <span className="mono">KAMERA BOOTH DI PERANGKAT INI</span>
+        <div className="segmented">
+          <button aria-pressed={choice === 'device'} onClick={chooseDevice}>
+            Kamera perangkat ini
           </button>
-          <Link className="pill pill-ghost pill-sm" href="/operator" style={{ display: 'inline-flex', alignItems: 'center' }}>
-            Konsol
-          </Link>
+          <button aria-pressed={choice === 'canon'} onClick={() => void chooseCanon()} disabled={detecting}>
+            {detecting ? 'Mendeteksi Canon…' : 'Canon (USB)'}
+          </button>
         </div>
+        <p className="muted" style={{ fontSize: 13 }}>
+          {choice === 'device'
+            ? 'Default: booth memakai kamera perangkat ini (MacBook, iPad, atau capture card). Canon tidak disentuh. Pilih Canon (USB) untuk mendeteksi dan memakainya.'
+            : 'Booth di perangkat ini memotret dengan Canon yang tersambung ke server. Kalibrasi sebelum acara.'}
+        </p>
+        {problem && (
+          <div className="notice notice-error" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <span>{problem}</span>
+            {problemDetail && <span className="mono mono-sm">{problemDetail}</span>}
+            {info?.hint && <span>{info.hint}</span>}
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <button className="pill pill-ghost pill-sm" onClick={() => void (choice === 'canon' ? detect() : chooseCanon())} disabled={detecting}>
+                Deteksi lagi
+              </button>
+              {choice === 'canon' && (
+                <button className="pill pill-ghost pill-sm" onClick={chooseDevice}>
+                  Pakai kamera perangkat ini
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="kiosk-body">
-        <section className="col-main">
-          <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            <span className="status-item">
-              <i className={dot} />
-              <span className="mono">
-                {info ? `${info.backend.toUpperCase()} · ${info.ready ? 'READY' : 'NOT READY'}` : 'CHECKING…'}
-              </span>
-            </span>
-            <h3>{info?.model ?? 'No body detected'}</h3>
-            <span className="mono">{info?.port ?? 'NO PORT'}</span>
-            {info?.message && <div className="notice">{info.message}</div>}
-            {info?.hint && <div className="notice notice-error">{info.hint}</div>}
-            {info && !info.serverLiveView && (
-              <p className="muted" style={{ fontSize: 14 }}>
-                This booth is set to <code>CAMERA_SOURCE=browser</code>, so capture happens in the tablet. Restart
-                with <code>CAMERA_SOURCE=gphoto2</code> to drive a tethered body.
-              </p>
-            )}
-          </div>
+        {choice === 'device' && (
+          <section className="col-main">
+            <MirrorPanel mirror={mirror} onChange={setMirror} />
+            <BrowserCameraPanel mirror={mirror} />
+          </section>
+        )}
 
-          {info && !info.serverLiveView && <BrowserCameraPanel />}
-
-          {info?.serverLiveView && (
-            <div className="viewfinder">
-              {info.ready ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img key={liveKey} src={`/api/camera/liveview?k=${liveKey}`} alt="Live view" />
-              ) : (
-                <div style={{ padding: '2rem', textAlign: 'center' }}>
-                  <h3>No live view</h3>
-                  <p className="muted" style={{ marginTop: 8 }}>Connect the body, then re-detect.</p>
-                </div>
-              )}
-            </div>
-          )}
-        </section>
-
-        {info?.serverLiveView && (
-        <section className="col-deck scroll">
-          <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            <span className="mono">EXPOSURE ON THE BODY</span>
-            {(['iso', 'aperture', 'shutterspeed'] as const).map((name) => {
-              const options = info?.choices?.[name] ?? [];
-              const current = info?.settings?.[name] ?? '';
-              return (
-                <label key={name} className="field-label">
-                  <span className="mono mono-sm">{name.toUpperCase()}</span>
-                  {options.length > 0 ? (
-                    <select
-                      className="field"
-                      value={current}
-                      disabled={!info?.ready || saving === name}
-                      onChange={(e) => setSetting(name, e.target.value)}
-                    >
-                      {!options.includes(current) && current && <option value={current}>{current}</option>}
-                      {options.map((o) => (
-                        <option key={o} value={o}>
-                          {o}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input className="field" value={current} disabled readOnly placeholder="—" />
-                  )}
-                </label>
-              );
-            })}
-            {info?.ready && !info.choices?.iso.length && (
-              <p className="mono mono-sm">THIS BODY DID NOT ADVERTISE CHOICES — SET EXPOSURE ON THE CAMERA ITSELF</p>
-            )}
-          </div>
-
-          <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            <span className="mono">TEST SHOT</span>
-            <p className="muted" style={{ fontSize: 14 }}>
-              Fires the shutter once and times it end to end. Use the number to tune the countdown before doors open.
-            </p>
-            <button className="pill" onClick={fireTest} disabled={!info?.ready || test.kind === 'firing'}>
-              {test.kind === 'firing' ? 'Firing…' : 'Fire test shot'}
-            </button>
-            {test.kind === 'ok' && (
-              <>
-                <span className="mono">CAPTURED IN {test.ms} ms</span>
+        {canon && info && (
+          <>
+            <section className="col-main">
+              <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <span className="status-item">
+                  <i className="dot dot-ok" />
+                  <span className="mono">TERHUBUNG · {info.port}</span>
+                </span>
+                <h3>{info.model}</h3>
+              </div>
+              <div className="viewfinder">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={test.src} alt="Test shot" style={{ width: '100%', borderRadius: 12 }} />
-                {test.ms > 3000 && (
-                  <div className="notice">
-                    Slower than the 4s countdown allows for. Raise the countdown or guests will move before the
-                    shutter fires.
-                  </div>
-                )}
-              </>
-            )}
-            {test.kind === 'failed' && <div className="notice notice-error">{test.message}</div>}
-          </div>
+                <img
+                  key={liveKey}
+                  src={`/api/camera/liveview?k=${liveKey}`}
+                  alt="Live view"
+                  style={{ transform: mirror ? 'scaleX(-1)' : undefined }}
+                />
+              </div>
+              <button className="pill pill-ghost" onClick={() => setLiveKey((k) => k + 1)}>
+                Muat ulang live view
+              </button>
+            </section>
 
-          {info.ready && (
-            <button className="pill pill-ghost" onClick={() => setLiveKey((k) => k + 1)}>
-              Restart live view
-            </button>
-          )}
-        </section>
+            <section className="col-deck scroll">
+              <CameraCalibration />
+              <MirrorPanel mirror={mirror} onChange={setMirror} />
+
+              <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <span className="mono">EKSPOSUR DI KAMERA</span>
+                {(['iso', 'aperture', 'shutterspeed'] as const).map((name) => {
+                  const options = info.choices?.[name] ?? [];
+                  const current = info.settings?.[name] ?? '';
+                  return (
+                    <label key={name} className="field-label">
+                      <span className="mono mono-sm">{{ iso: 'ISO', aperture: 'BUKAAN (F)', shutterspeed: 'RANA' }[name]}</span>
+                      {options.length > 0 ? (
+                        <select className="field" value={current} disabled={saving === name} onChange={(e) => setSetting(name, e.target.value)}>
+                          {!options.includes(current) && current && <option value={current}>{current}</option>}
+                          {options.map((o) => (
+                            <option key={o} value={o}>
+                              {o}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input className="field" value={current} disabled readOnly placeholder="—" />
+                      )}
+                    </label>
+                  );
+                })}
+                {!info.choices?.iso.length && (
+                  <p className="muted" style={{ fontSize: 13 }}>Kamera tidak memberi pilihan dari sini: atur langsung di kamera (kenop M).</p>
+                )}
+              </div>
+
+              <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <span className="mono">TEST SHOT</span>
+                <button className="pill pill-ghost" onClick={fireTest} disabled={test.kind === 'firing'}>
+                  {test.kind === 'firing' ? 'Memotret…' : 'Potret sekali'}
+                </button>
+                {test.kind === 'ok' && (
+                  <>
+                    <span className="mono">RANA MEMBUKA {test.ms} MS SETELAH DIMINTA</span>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={test.src} alt="Test shot" style={{ width: '100%', borderRadius: 12 }} />
+                  </>
+                )}
+                {test.kind === 'failed' && <div className="notice notice-error">{test.message}</div>}
+              </div>
+            </section>
+          </>
         )}
       </div>
     </main>

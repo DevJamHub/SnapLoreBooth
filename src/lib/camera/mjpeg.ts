@@ -5,16 +5,15 @@ const EOI = Buffer.from([0xff, 0xd9]);
 
 /**
  * `gphoto2 --capture-movie --stdout` emits JPEGs back to back with no framing, so we split
- * on the SOI/EOI markers and re-emit each frame with a multipart boundary the browser
- * understands in an <img> tag.
+ * on the SOI/EOI markers and hand back each whole frame.
  */
-export function createMjpegFramer() {
+export function createJpegSplitter() {
   let buffer: Buffer<ArrayBuffer> = Buffer.alloc(0);
 
   return {
     push(chunk: Buffer<ArrayBuffer>): Buffer[] {
       buffer = buffer.length ? Buffer.concat([buffer, chunk]) : chunk;
-      const parts: Buffer[] = [];
+      const frames: Buffer[] = [];
 
       for (;;) {
         const start = buffer.indexOf(SOI);
@@ -29,18 +28,20 @@ export function createMjpegFramer() {
           break;
         }
 
-        const frame = buffer.subarray(start, end + 2);
+        frames.push(Buffer.from(buffer.subarray(start, end + 2)));
         buffer = buffer.subarray(end + 2);
-        parts.push(
-          Buffer.concat([
-            Buffer.from(`--${MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.length}\r\n\r\n`),
-            frame,
-            Buffer.from('\r\n'),
-          ]),
-        );
       }
 
-      return parts;
+      return frames;
     },
   };
+}
+
+/** One frame as a part of the multipart stream a browser plays in an <img> tag. */
+export function multipartPart(frame: Buffer): Buffer {
+  return Buffer.concat([
+    Buffer.from(`--${MJPEG_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.length}\r\n\r\n`),
+    frame,
+    Buffer.from('\r\n'),
+  ]);
 }

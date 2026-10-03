@@ -1,14 +1,51 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { UPLOAD_DIR } from '@/lib/db';
-import { createMjpegFramer } from './mjpeg';
-import type { CameraChoices, CameraInfo, CameraSettings, CameraSource, CaptureResult } from './types';
+import { createJpegSplitter, multipartPart } from './mjpeg';
+import type {
+  CameraChoices,
+  CameraInfo,
+  CameraSettings,
+  CameraSource,
+  CameraStatus,
+  CaptureOptions,
+  CaptureResult,
+  SettingName,
+} from './types';
 
 const run = promisify(execFile);
 const BIN = process.env.GPHOTO2_BIN ?? 'gphoto2';
+/** gphoto2 is translated; its messages are only parsed reliably in English. */
+const GPHOTO_ENV = { ...process.env, LANG: 'C', LC_ALL: 'C' };
+
+/**
+ * The body streams live view as fast as USB allows (about 60 fps of 480x320 on an M50, over
+ * 5 MB/s). A viewfinder needs far less, and a tablet on venue Wi-Fi cannot take that much.
+ */
+const LIVE_FPS = 24;
+/** A guest moving from Hias to Foto, or a reload, reconnects within this; then live view stops. */
+const LIVE_IDLE_MS = 15_000;
+/** How soon live view is retried after the body drops it (asleep, cable knocked). */
+const LIVE_RETRY_MS = 2000;
+const SETTING_NAMES: SettingName[] = ['iso', 'aperture', 'shutterspeed'];
+/**
+ * A guest is mid-pose; past this a shot is not coming. Long enough for a retried autofocus
+ * and a 1 s exposure, short enough to say "Coba lagi" while they are still there.
+ */
+const CAPTURE_TIMEOUT_MS = 20_000;
+/**
+ * How long a half-press gets to focus before the shot is taken anyway. A booth must never
+ * refuse to fire: a guest in dim light is better slightly soft than not photographed at all.
+ */
+const FOCUS_WINDOW_MS = 700;
+/** gphoto2 can sit for 90 s after reporting a refusal; once it has said so, it is killed. */
+const KILL_AFTER_ERROR_MS = 500;
+/** How long live view gets to shut the camera's viewfinder down cleanly before it is killed. */
+const LIVE_STOP_MS = 2500;
 
 /**
  * Only one process may hold the camera over PTP at a time, so live view has to be torn
@@ -25,27 +62,153 @@ class CameraLock {
   }
 }
 
+type FrameListener = (frame: Buffer) => void;
+
+interface Target {
+  model: string;
+  port: string;
+}
+
+/**
+ * The lines gphoto2 prints under "*** Error ***", without its debugging boilerplate. It
+ * exits 0 for many refusals (no focus, busy, bad value), so this is the only reliable signal.
+ */
+function gphotoError(output: string): string | null {
+  const at = output.indexOf('*** Error');
+  if (at === -1) return null;
+  const lines = output
+    .slice(at)
+    .split(/\n\s*\n/)[0]
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('***'));
+  return lines.join('\n') || 'gphoto2 reported an error';
+}
+
+/**
+ * Rows of `gphoto2 --auto-detect`. An iPhone or iPad plugged in to charge shows up as a PTP
+ * camera too, and gphoto2 would otherwise talk to whichever it finds first.
+ */
+function parseDetected(stdout: string): Target[] {
+  return stdout
+    .split('\n')
+    .slice(2)
+    .map((l) => l.trim())
+    .filter((l) => /usb:/.test(l))
+    .map((l) => ({ model: l.slice(0, l.search(/usb:/)).trim(), port: l.slice(l.search(/usb:/)).trim() }));
+}
+
+/**
+ * Starts gphoto2 so its output arrives line by line. Over a pipe it holds every line until it
+ * exits, and the moment the shutter fires ("New file is in location") would come too late
+ * to flash on. A pseudo-terminal (macOS `script`) or `stdbuf` (Linux) unbuffers it. It runs
+ * in its own process group so a timeout kills gphoto2, not just the wrapper.
+ */
+function spawnUnbuffered(args: string[]): ChildProcess {
+  const options = { stdio: ['ignore', 'pipe', 'pipe'] as ('ignore' | 'pipe')[], detached: true, env: GPHOTO_ENV };
+  if (process.platform === 'darwin' && existsSync('/usr/bin/script')) {
+    return spawn('/usr/bin/script', ['-q', '/dev/null', BIN, ...args], options);
+  }
+  if (process.platform === 'linux' && existsSync('/usr/bin/stdbuf')) {
+    return spawn('/usr/bin/stdbuf', ['-oL', '-eL', BIN, ...args], options);
+  }
+  return spawn(BIN, args, options);
+}
+
+function killGroup(child: ChildProcess) {
+  try {
+    if (child.pid) process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    child.kill('SIGKILL');
+  }
+}
+
+function pickCamera(rows: Target[]): Target | null {
+  const wanted = process.env.GPHOTO2_CAMERA?.toLowerCase();
+  if (wanted) return rows.find((r) => r.model.toLowerCase().includes(wanted)) ?? null;
+  return rows.find((r) => !/apple|iphone|ipad/i.test(r.model)) ?? null;
+}
+
 export class Gphoto2Camera implements CameraSource {
   readonly backend = 'gphoto2' as const;
   private lock = new CameraLock();
-  private liveProcess: ReturnType<typeof spawn> | null = null;
+  private liveProcess: ChildProcess | null = null;
+  /** One per open viewfinder. Live view runs while any is listening. */
+  private listeners = new Set<FrameListener>();
+  private idleTimer: NodeJS.Timeout | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
+  /** The last good probe, answered while live view holds the camera. */
+  private lastInfo: CameraInfo | null = null;
+  /** The body every command is addressed to. Cleared on failure; the port changes on replug. */
+  private target: Target | null = null;
+  /** Whether the body takes Canon EOS remote-release commands; asked once, then remembered. */
+  private eosRelease: boolean | null = null;
+
+  private portArgs(): string[] {
+    return this.target ? ['--port', this.target.port] : [];
+  }
 
   private async gphoto(args: string[], timeout = 20_000): Promise<string> {
-    const { stdout } = await run(BIN, args, { timeout, maxBuffer: 8 * 1024 * 1024 });
+    let stdout: string;
+    let stderr: string;
+    try {
+      // SIGKILL on timeout: gphoto2 blocked on the camera ignores SIGTERM and holds the lock.
+      ({ stdout, stderr } = await run(BIN, [...this.portArgs(), ...args], {
+        timeout,
+        killSignal: 'SIGKILL',
+        maxBuffer: 8 * 1024 * 1024,
+        env: GPHOTO_ENV,
+      }));
+    } catch (error) {
+      const failed = error as { stdout?: string; stderr?: string };
+      const printed = gphotoError(`${failed.stderr ?? ''}\n${failed.stdout ?? ''}`);
+      throw new Error(printed ?? (error instanceof Error ? error.message.split('\n')[0] : String(error)));
+    }
+    const printed = gphotoError(`${stderr}\n${stdout}`);
+    if (printed) throw new Error(printed);
     return stdout;
   }
 
-  async info(): Promise<CameraInfo> {
-    try {
-      const stdout = await this.gphoto(['--auto-detect'], 8000);
-      // Rows look like: "Canon EOS M50    usb:020,011"
-      const line = stdout
-        .split('\n')
-        .slice(2)
-        .map((l) => l.trim())
-        .find((l) => l.length > 0 && /usb:/.test(l));
+  /** Finds the camera to drive. Call inside the lock. */
+  private async detect(): Promise<Target | null> {
+    const { stdout } = await run(BIN, ['--auto-detect'], { timeout: 8000, killSignal: 'SIGKILL', env: GPHOTO_ENV });
+    const found = pickCamera(parseDetected(stdout));
+    // Another body may have been plugged in; ask it again how it is fired.
+    if (found?.model !== this.target?.model) this.eosRelease = null;
+    this.target = found;
+    return this.target;
+  }
 
-      if (!line) {
+  async info(): Promise<CameraInfo> {
+    return this.lock.run(async () => {
+      // Live view holds the camera by design: probing now would fail and report the booth
+      // broken to the guest who is looking at a working viewfinder.
+      if (this.liveProcess) return this.lastInfo ?? this.busyInfo();
+      const info = await this.probe();
+      if (info.ready) this.lastInfo = info;
+      return info;
+    });
+  }
+
+  private busyInfo(): CameraInfo {
+    return {
+      backend: this.backend,
+      ready: true,
+      model: null,
+      port: null,
+      serverLiveView: true,
+      message: null,
+      settings: null,
+      choices: null,
+      hint: null,
+    };
+  }
+
+  private async probe(): Promise<CameraInfo> {
+    try {
+      const found = await this.detect();
+
+      if (!found) {
         return {
           backend: this.backend,
           ready: false,
@@ -59,8 +222,7 @@ export class Gphoto2Camera implements CameraSource {
         };
       }
 
-      const port = line.slice(line.search(/usb:/)).trim();
-      const model = line.slice(0, line.search(/usb:/)).trim();
+      const { model, port } = found;
       // Enumeration is not readiness: on macOS the device shows up in --auto-detect while
       // ptpcamerad still owns interface 0, and every capture then fails. Probe by actually
       // claiming it.
@@ -80,10 +242,12 @@ export class Gphoto2Camera implements CameraSource {
         };
       }
 
+      const stillAspect = await this.readStillAspect();
+
       let settings: CameraSettings | null = null;
       let choices: CameraChoices | null = null;
       try {
-        [settings, choices] = await Promise.all([this.readSettings(), this.readAllChoices()]);
+        ({ settings, choices } = await this.readConfigs());
       } catch {
         // A body that claims fine but will not describe its config is still usable for stills.
       }
@@ -98,6 +262,7 @@ export class Gphoto2Camera implements CameraSource {
         settings,
         choices,
         hint: await macosClaimHint(),
+        stillAspect,
       };
     } catch (error) {
       return {
@@ -114,117 +279,257 @@ export class Gphoto2Camera implements CameraSource {
     }
   }
 
-  private async readConfig(name: string): Promise<string | null> {
-    try {
-      const stdout = await this.gphoto(['--get-config', name], 8000);
-      const current = stdout.split('\n').find((l) => l.startsWith('Current:'));
-      return current ? current.replace('Current:', '').trim() : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private async readChoices(name: string): Promise<string[]> {
-    try {
-      const stdout = await this.gphoto(['--get-config', name], 8000);
-      return stdout
-        .split('\n')
+  /**
+   * Reads every exposure setting in one gphoto2 run. Separate runs at once would fight over
+   * the camera, and all but one would come back empty.
+   */
+  private async readConfigs(): Promise<{ settings: CameraSettings; choices: CameraChoices }> {
+    const stdout = await this.gphoto(SETTING_NAMES.flatMap((name) => ['--get-config', name]), 15_000);
+    // Each setting prints as a block ending in a line "END", in the order asked.
+    const blocks = stdout.split(/^END$/m);
+    const settings: CameraSettings = { iso: null, aperture: null, shutterspeed: null };
+    const choices: CameraChoices = { iso: [], aperture: [], shutterspeed: [] };
+    SETTING_NAMES.forEach((name, i) => {
+      const lines = (blocks[i] ?? '').split('\n').map((l) => l.trim());
+      settings[name] = lines.find((l) => l.startsWith('Current:'))?.replace('Current:', '').trim() ?? null;
+      choices[name] = lines
         .filter((l) => l.startsWith('Choice:'))
         // "Choice: 3 400" -> "400"
         .map((l) => l.replace(/^Choice:\s*\d+\s*/, '').trim())
         .filter((v) => v.length > 0 && v !== 'Unknown value');
-    } catch {
-      return [];
-    }
-  }
-
-  private async readAllChoices(): Promise<CameraChoices> {
-    const [iso, aperture, shutterspeed] = await Promise.all([
-      this.readChoices('iso'),
-      this.readChoices('aperture'),
-      this.readChoices('shutterspeed'),
-    ]);
-    return { iso, aperture, shutterspeed };
-  }
-
-  private async readSettings(): Promise<CameraSettings> {
-    const [iso, aperture, shutterspeed] = await Promise.all([
-      this.readConfig('iso'),
-      this.readConfig('aperture'),
-      this.readConfig('shutterspeed'),
-    ]);
-    return { iso, aperture, shutterspeed };
+    });
+    return { settings, choices };
   }
 
   async applySettings(patch: Partial<CameraSettings>): Promise<CameraSettings> {
     return this.lock.run(async () => {
-      const wasLive = this.liveProcess !== null;
-      await this.stopLiveView();
-
-      for (const [name, value] of Object.entries(patch)) {
-        if (value == null || value === '') continue;
-        await this.gphoto(['--set-config', `${name}=${value}`], 10_000);
+      await this.stopLiveProcess();
+      if (!this.target) await this.detect();
+      try {
+        const args = Object.entries(patch).flatMap(([name, value]) =>
+          value == null || value === '' ? [] : ['--set-config', `${name}=${value}`],
+        );
+        if (args.length > 0) await this.gphoto(args, 10_000);
+        const { settings, choices } = await this.readConfigs();
+        if (this.lastInfo) this.lastInfo = { ...this.lastInfo, settings, choices };
+        return settings;
+      } finally {
+        if (this.listeners.size > 0) await this.startLive();
       }
-
-      const settings = await this.readSettings();
-      if (wasLive) this.startLiveProcess();
-      return settings;
     });
   }
 
-  async capture(sessionId: string, index: number): Promise<CaptureResult> {
+  /** Settings the calibration checklist judges, read in one pass. Pauses live view briefly. */
+  async status(): Promise<CameraStatus> {
+    const fields: [keyof Omit<CameraStatus, 'model'>, string][] = [
+      ['battery', 'batterylevel'],
+      ['mode', 'autoexposuremodedial'],
+      ['aspect', 'aspectratio'],
+      ['autoPowerOff', 'autopoweroff'],
+      ['imageFormat', 'imageformat'],
+      ['iso', 'iso'],
+      ['aperture', 'aperture'],
+      ['shutterspeed', 'shutterspeed'],
+    ];
     return this.lock.run(async () => {
-      const wasLive = this.liveProcess !== null;
-      await this.stopLiveView();
+      await this.stopLiveProcess();
+      try {
+        if (!this.target && !(await this.detect())) throw new Error(describe(new Error('no camera')));
+        const status: CameraStatus = {
+          model: this.target?.model ?? null,
+          battery: null,
+          mode: null,
+          aspect: null,
+          autoPowerOff: null,
+          imageFormat: null,
+          iso: null,
+          aperture: null,
+          shutterspeed: null,
+        };
+        const current = (block: string) => /^Current:\s*(.*)$/m.exec(block)?.[1]?.trim() ?? null;
+        try {
+          // One run for all of them; a body missing one setting fails the run, so then ask singly.
+          const blocks = (await this.gphoto(fields.flatMap(([, name]) => ['--get-config', name]), 15_000)).split(/^END$/m);
+          fields.forEach(([key], i) => (status[key] = current(blocks[i] ?? '')));
+        } catch {
+          for (const [key, name] of fields) {
+            status[key] = await this.gphoto(['--get-config', name], 8000).then(current, () => null);
+          }
+        }
+        return status;
+      } finally {
+        if (this.listeners.size > 0) await this.startLive();
+      }
+    });
+  }
+
+  async capture(sessionId: string, index: number, onFired?: () => void, options: CaptureOptions = {}): Promise<CaptureResult> {
+    return this.lock.run(async () => {
+      await this.stopLiveProcess();
+      if (!this.target && !(await this.detect())) throw new Error(describe(new Error('no camera')));
 
       const relative = path.join(sessionId, `shot-${index}.jpeg`);
       const target = path.join(UPLOAD_DIR, relative);
       await fs.mkdir(path.dirname(target), { recursive: true });
       await fs.rm(target, { force: true });
 
-      const fire = () =>
-        this.gphoto(['--capture-image-and-download', '--filename', target, '--force-overwrite'], 45_000);
+      const fire = () => this.shoot(target, onFired, options.requireFocus === true);
 
       try {
         try {
           await fire();
         } catch (first) {
           // A refused autofocus is the commonest miss at an event and usually succeeds on a
-          // second attempt once the lens has settled. Anything else fails straight through.
-          if (!/focus/i.test(first instanceof Error ? first.message : String(first))) throw first;
+          // second attempt once the lens has settled. Anything else fails straight through, and
+          // the focus test reports the first refusal as it is.
+          if (options.requireFocus || !/focus/i.test(first instanceof Error ? first.message : String(first))) throw first;
           await new Promise((r) => setTimeout(r, 600));
           await fire();
         }
       } catch (error) {
+        // The next attempt finds the body afresh, in case it was replugged onto another port.
+        this.target = null;
         throw new Error(describe(error));
       } finally {
-        if (wasLive) this.startLiveProcess();
+        // Viewfinders stay connected through the shot; they just get frames again.
+        if (this.listeners.size > 0) await this.startLive();
       }
 
-      const stat = await fs.stat(target);
+      const stat = await fs.stat(target).catch(() => null);
+      if (!stat) throw new Error('The camera fired but did not hand over the photo. Try again.');
       return { file: relative, bytes: stat.size };
     });
   }
 
+  /**
+   * The stills' shape, from the body's aspect-ratio setting. It is read rather than set: an
+   * M50 answers "Device Busy" to any change over USB, so it is the operator's to set (3:2
+   * keeps the whole sensor) and the kiosk crops its preview to whatever it is.
+   */
+  private async readStillAspect(): Promise<number | null> {
+    try {
+      const out = await this.gphoto(['--get-config', 'aspectratio'], 8000);
+      const match = /Current:\s*(\d+):(\d+)/.exec(out);
+      return match ? Number(match[1]) / Number(match[2]) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Canon EOS bodies expose `eosremoterelease`; others are driven by plain capture. */
+  private async supportsEosRelease(): Promise<boolean> {
+    if (this.eosRelease === null) {
+      this.eosRelease = await this.gphoto(['--get-config', 'eosremoterelease'], 8000).then(
+        (out) => out.includes('Press Full MF'),
+        () => false,
+      );
+    }
+    return this.eosRelease;
+  }
+
+  /**
+   * One capture-and-download, reporting the moment the shutter fires. Call inside the lock.
+   *
+   * On a Canon EOS body the shutter is pressed the way a photographer would: half-press to
+   * focus, then a full press that fires whether or not focus locked. gphoto2's own capture
+   * refuses to fire without focus ("Perhaps no focus?") and then hangs for 90 s; on an M50
+   * in a dim room that was most shots.
+   */
+  private async shoot(target: string, onFired?: () => void, requireFocus = false): Promise<void> {
+    // The focus test uses plain capture on purpose: it is the one that refuses without focus.
+    const eos = !requireFocus && (await this.supportsEosRelease());
+    const args = eos
+      ? [
+          '--set-config', 'eosremoterelease=Press Half AF',
+          `--wait-event=${FOCUS_WINDOW_MS}ms`,
+          '--set-config', 'eosremoterelease=Press Full MF',
+          '--set-config', 'eosremoterelease=Release Full',
+          '--wait-event-and-download=FILEADDED',
+          '--filename', target, '--force-overwrite',
+        ]
+      : ['--capture-image-and-download', '--filename', target, '--force-overwrite'];
+    // Printed right after the shutter fired: the full press is done and the wait for the file
+    // begins (EOS), or the body has reported the new picture (plain capture).
+    const firedMarker = eos ? "Waiting for 'FILEADDED'" : 'New file is in location';
+
+    return new Promise((resolve, reject) => {
+      const child = spawnUnbuffered([...this.portArgs(), ...args]);
+      let output = '';
+      let fired = false;
+      let killing: NodeJS.Timeout | null = null;
+      const collect = (chunk: Buffer) => {
+        output += chunk.toString();
+        if (!fired && output.includes(firedMarker)) {
+          fired = true;
+          onFired?.();
+        }
+        if (!killing && output.includes('*** Error')) killing = setTimeout(() => killGroup(child), KILL_AFTER_ERROR_MS);
+      };
+      child.stdout?.on('data', collect);
+      child.stderr?.on('data', collect);
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        killGroup(child);
+      }, CAPTURE_TIMEOUT_MS);
+      child.once('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once('exit', () => {
+        clearTimeout(timer);
+        if (killing) clearTimeout(killing);
+        if (timedOut) return reject(new Error('The camera did not take the picture in time.'));
+        const printed = gphotoError(output.replace(/\r/g, ''));
+        if (printed) return reject(new Error(printed));
+        // The moment never showed in the output (still buffered): flash now rather than never.
+        // Whether a photo really arrived is checked on disk by the caller.
+        if (!fired) onFired?.();
+        resolve();
+      });
+    });
+  }
+
+  /** Call inside the lock. Frames go to every listener until the process is stopped. */
+  private async startLive() {
+    if (this.liveProcess) return;
+    if (!this.target) await this.detect().catch(() => null);
+    this.startLiveProcess();
+  }
+
+  /** Call inside the lock, with the target found. */
   private startLiveProcess() {
     if (this.liveProcess) return;
-    const child = spawn(BIN, ['--capture-movie', '--stdout'], { stdio: ['ignore', 'pipe', 'pipe'] });
-    child.on('exit', () => {
-      if (this.liveProcess === child) this.liveProcess = null;
+    const child = spawn(BIN, [...this.portArgs(), '--capture-movie', '--stdout'], { stdio: ['ignore', 'pipe', 'ignore'], env: GPHOTO_ENV });
+    const splitter = createJpegSplitter();
+    child.stdout!.on('data', (chunk: Buffer<ArrayBuffer>) => {
+      for (const frame of splitter.push(chunk)) for (const listener of this.listeners) listener(frame);
     });
+    const ended = () => {
+      if (this.liveProcess !== child) return; // stopped on purpose
+      this.liveProcess = null;
+      this.target = null;
+      // The body slept or the cable moved: keep trying while someone is watching.
+      if (this.listeners.size > 0) this.scheduleRetry();
+    };
+    child.once('exit', ended);
+    child.once('error', ended);
     this.liveProcess = child;
   }
 
-  private async stopLiveView(): Promise<void> {
+  /** Call inside the lock. */
+  private async stopLiveProcess(): Promise<void> {
     const child = this.liveProcess;
     if (!child) return;
     this.liveProcess = null;
-    child.kill('SIGTERM');
+    // SIGINT is gphoto2's Ctrl-C: it ends live view and closes the session properly. Killed
+    // outright, the body can be left in PC live view and hang the next capture.
+    child.kill('SIGINT');
     await new Promise((resolve) => {
       const timer = setTimeout(() => {
         child.kill('SIGKILL');
         resolve(null);
-      }, 2000);
+      }, LIVE_STOP_MS);
       child.once('exit', () => {
         clearTimeout(timer);
         resolve(null);
@@ -232,36 +537,72 @@ export class Gphoto2Camera implements CameraSource {
     });
   }
 
+  private scheduleRetry() {
+    if (this.retryTimer) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.listeners.size > 0) void this.lock.run(() => this.startLive());
+    }, LIVE_RETRY_MS);
+  }
+
+  /** Live view keeps the sensor on and drains the battery, so it stops when nobody watches. */
+  private scheduleIdleStop() {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.listeners.size === 0) void this.lock.run(() => this.stopLiveProcess());
+    }, LIVE_IDLE_MS);
+  }
+
   async liveView(signal: AbortSignal): Promise<ReadableStream<Uint8Array> | null> {
-    this.startLiveProcess();
-    const child = this.liveProcess;
-    if (!child?.stdout) return null;
+    if (signal.aborted) return null;
+    let listener: FrameListener | null = null;
 
-    const framer = createMjpegFramer();
+    const detach = () => {
+      if (!listener) return;
+      this.listeners.delete(listener);
+      listener = null;
+      if (this.listeners.size === 0) this.scheduleIdleStop();
+    };
 
-    return new ReadableStream<Uint8Array>({
+    const stream = new ReadableStream<Uint8Array>({
       start: (controller) => {
-        const stdout = child.stdout!;
-        const onData = (chunk: Buffer<ArrayBuffer>) => {
-          for (const part of framer.push(chunk)) controller.enqueue(new Uint8Array(part));
-        };
-        const finish = () => {
-          stdout.off('data', onData);
+        let lastSent = 0;
+        listener = (frame) => {
+          const now = Date.now();
+          // Cap the rate, and drop frames a slow client has not taken yet, so the screen
+          // always shows the newest frame instead of falling seconds behind.
+          if (now - lastSent < 1000 / LIVE_FPS || (controller.desiredSize ?? 1) <= 0) return;
+          lastSent = now;
           try {
-            controller.close();
+            controller.enqueue(new Uint8Array(multipartPart(frame)));
           } catch {
-            // Already closed by an earlier abort.
+            detach();
           }
         };
-
-        stdout.on('data', onData);
-        child.once('exit', finish);
-        signal.addEventListener('abort', finish, { once: true });
+        this.listeners.add(listener);
+        if (this.idleTimer) {
+          clearTimeout(this.idleTimer);
+          this.idleTimer = null;
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            detach();
+            try {
+              controller.close();
+            } catch {
+              // Already closed.
+            }
+          },
+          { once: true },
+        );
       },
-      cancel: () => {
-        void this.stopLiveView();
-      },
+      cancel: detach,
     });
+
+    await this.lock.run(() => this.startLive());
+    return stream;
   }
 }
 
@@ -286,6 +627,9 @@ function describe(error: unknown): string {
   }
   if (/out of focus|focus/i.test(message)) return 'The camera refused to fire: it could not focus.';
   if (/card|storage/i.test(message)) return 'The camera reported a card problem. Check the SD card.';
+  if (/generic capture|unsupported operation/i.test(message)) {
+    return 'The camera will not shoot right now. Set the dial to a photo mode (not video) and leave the playback screen.';
+  }
   if (/could not claim|busy/i.test(message)) {
     return 'The camera is attached but macOS will not release it. Run `sudo killall ptpcamerad`, close Image Capture and Photos, then retry.';
   }

@@ -110,6 +110,15 @@ EVENT_NAME="SnaploreBooth"                  # only names the very first event on
 Guests can keep their own photo off the link from the print screen. The slug ends in random
 characters so the link cannot be guessed from the event name.
 
+## Mirror
+
+Off by default: the preview and the photos show the guest as the camera sees them, so the
+screen matches the print. *Konsol → Kamera → Cerminkan foto* turns it on for the event; then
+the preview and the results are flipped together. Files are always stored as the sensor saw
+them, and a session records whether it is mirrored (taken from the event when it starts), so
+the sheet, the live sheet, and the per-photo views on the QR page flip them. The individual
+photo and clip downloads on the QR page are the stored, unflipped files.
+
 ## Custom frames
 
 Besides the built-in frames, the operator can upload their own design at **Konsol → Frame**
@@ -298,10 +307,24 @@ Capture sits behind a `CameraSource` interface with three backends, chosen by
 
 | Value | Behaviour |
 | --- | --- |
-| `browser` (default) | Any camera the browser can see via `getUserMedia`, composited on a canvas. The capture screen offers a device picker, so a Canon exposed as a webcam (EOS Webcam Utility, or an HDMI capture dongle) is selectable and remembered |
-| `gphoto2` | A tethered body (Canon EOS M50 / M50 Mark II) over USB, driven by `gphoto2` |
+| `browser` (default without gphoto2) | Any camera the browser can see via `getUserMedia`, composited on a canvas. The capture screen offers a device picker, so a Canon exposed as a webcam (EOS Webcam Utility, or an HDMI capture dongle) is selectable and remembered |
+| `gphoto2` (default with gphoto2 installed) | Offers a tethered body (Canon EOS M50 / M50 Mark II) over USB, driven by `gphoto2` |
 | `folder` | Watches a directory and ingests stills dropped there by another tethering app |
 | `simulator` | A synthetic stream and stills, for exercising the pipeline with no hardware |
+
+**Every device shoots with its own camera by default** (the MacBook's, the iPad's, or a
+capture card it sees). The Canon is opt-in per device at *Konsol → Kamera*: **Canon (USB)**
+first detects it, and the device switches only if it answers ready; otherwise it stays on its
+own camera and says why. The choice is stored on that device, so a MacBook can test with its
+webcam while the iPad booth uses the Canon. A device on its own camera never probes or wakes
+the Canon. With `CAMERA_SOURCE` unset, the server offers the Canon whenever gphoto2 is
+installed (a VPS without it stays browser-only).
+
+**Calibration** (*Konsol → Kamera*, once the Canon is connected) reads the body's dial mode,
+battery, auto power-off and aspect ratio, takes two test shots (brightness of the photo,
+shutter lag as this device sees it) and a focus test (a capture that fires only if autofocus
+locks), then lists what to change on the camera. The measured lag is stored on the device,
+so the countdown's flash lands on zero from the first guest.
 
 ### If macOS will not release the camera
 
@@ -378,13 +401,53 @@ its own end-to-end latency — the number to tune the capture countdown against 
 open. It is operator-only, as are `/api/camera/settings` and `/api/camera/test`, because
 both move real hardware.
 
-With `gphoto2` the kiosk swaps its `<video>` element for the server's MJPEG stream at
-`/api/camera/liveview`, stills come down at full sensor resolution rather than being
-re-encoded from a canvas, and the shutter/aperture/ISO readout in the capture dock reflects
-what the body actually reports.
+With `gphoto2` the capture screen plays the server's live view at `/api/camera/liveview`
+into a canvas, stills come down at full resolution rather than being re-encoded from a
+canvas, and the exposure the body reports is shown and settable in `/operator/camera`. The
+canvas is also what each shot's live clip records, so tethered sessions get the same clips
+and live sheet as a webcam (at live-view resolution).
 
-Only one process may hold the camera over PTP, so live view is torn down before each still
-and restarted afterwards; every camera operation is serialised through one lock.
+Only one process may hold the camera over PTP, so every camera operation is serialised
+through one lock. One gphoto2 live-view process feeds every open viewfinder, capped at 24 fps
+and dropping frames a slow client has not taken (the body sends ~60 fps, over 5 MB/s). It
+pauses for each still while the viewfinders stay connected, stops 15 seconds after the last
+one closes (live view drains the battery), and retries if the body drops it. While it runs,
+`/api/camera` answers from the last probe instead of reporting the busy camera as broken.
+
+Commands are addressed to the camera by `--port`. An iPhone or iPad plugged into the Mac
+enumerates as a PTP camera too, and gphoto2 would otherwise drive whichever it finds first;
+Apple devices are skipped, or set `GPHOTO2_CAMERA` (a model substring) to choose. gphoto2
+exits 0 for many refusals, so the printed `*** Error ***` text is what marks a failed shot.
+
+A tethered body fires a second or more after it is asked (live view stops, the body
+autofocuses), so the flash is tied to the shutter, not to the countdown. `POST
+/api/camera/capture` answers with a short event stream: `fired` as soon as gphoto2 reports
+the new file, then `done` with the photo, or `error`. gphoto2 runs under a pseudo-terminal
+(`script` on macOS, `stdbuf` on Linux) because over a pipe it prints nothing until it exits.
+The capture screen counts 3-2-1, shows *Tahan!* until `fired`, and flashes then. Each shot
+is requested early by the lag measured on earlier shots (kept per device, at most 1 s, since
+live view freezes from the request on), so the shutter lands close to zero. A capture that
+takes over 20 s is killed (SIGKILL; gphoto2 blocked on the camera ignores SIGTERM) and the
+guest is asked to retry; live view is stopped with SIGINT so the body leaves PC live view
+cleanly. `CAMERA_SOURCE=simulator SIMULATOR_SHUTTER_MS=1500` rehearses this timing without
+hardware.
+
+A Canon EOS body is fired the way a photographer would: half-press to focus (0.7 s), then a
+full press that fires whether or not focus locked (`eosremoterelease`), then the file is
+downloaded. gphoto2's own `--capture-image-and-download` refuses to fire without focus
+("Perhaps no focus?") and then hangs about 90 s; on an M50 in a dim room that was most
+shots. Any printed error now kills the process at once. Other bodies use plain capture.
+
+The still's aspect ratio is read from the body (an M50 refuses to change it over USB:
+"Device Busy"), and the kiosk cuts live view to it, so a body set to 16:9 previews the same
+16:9 middle it will shoot. Set it to 3:2 on the camera to use the whole sensor.
+
+Measured on a real EOS M50 (firmware 1.0.3) on macOS: live view 480 × 320 whatever
+*Live View Size* says, first frame ~1.5 s after a cold start, ~2.2 s from the request to the
+JPEG on disk, and the on-screen flash 85–190 ms after the countdown's zero. A body that cannot focus refuses to fire; the capture is retried once, then
+the guest is asked to step back and retry. Set the body to a photo mode (M or Av), still
+aspect ratio 3:2 (the live view is 3:2, so framing matches), auto power off disabled, and run
+it from a DC coupler for a whole event.
 
 ### Camera API
 
@@ -394,6 +457,8 @@ and restarted afterwards; every camera operation is serialised through one lock.
 | `GET` | `/api/camera/liveview` | `multipart/x-mixed-replace` MJPEG live view |
 | `POST` | `/api/camera/capture` | Fire the shutter for `{sessionId, index}` |
 | `POST` | `/api/camera/settings` | Set `iso`, `aperture`, `shutterspeed` on the body |
+| `GET` | `/api/camera/status` | Dial mode, battery, auto power-off, aspect ratio, exposure: the calibration checklist (operator only) |
+| `POST` | `/api/camera/test` | Diagnostic shot as an event stream (`fired`, `done`/`error`, each with `ms`); `?focus=1` fires only if autofocus locks (operator only) |
 
 ## Data retention
 
@@ -424,12 +489,11 @@ dashboard's payment records stay. Guests at the booth right now — unfinished s
 - **The booth needs internet when deployed.** The iPad loads the app and uploads photos to
   the VPS; bring a modem rather than relying on venue Wi-Fi.
 - **Email/SMS delivery has no guest screen.** The endpoint remains; nothing sends mail.
-- **The tethered path is verified only up to the macOS claim.** A real Canon EOS M50 has
-  been attached and is correctly detected, and the readiness probe and every failure path
-  were confirmed against it. Nothing beyond that is proven: no frame has been captured, so
-  live view framing, shutter latency and M50 firmware quirks remain untested until
-  `ptpcamerad` is released with sudo. On `browser` the shutter/aperture/ISO readout stays
-  decorative.
+- **Tethering needs the Mac (or a Linux box) at the booth.** gphoto2 runs on the server,
+  so an iPad-only booth uses the Canon through an HDMI capture card on `browser` instead.
+  The tethered path has been run end to end against a real EOS M50 (live view, stills,
+  clips, live sheet); on this Mac `ptpcamerad` no longer held the camera. Tethered live view
+  is 480 × 320, so viewfinder and clips are softer than the stills.
 - Prices render through `formatPrice`, which renders the stored Rupiah amount with Indonesian
   thousands separators — adjust it if you move to another currency.
 # SnapLoreBooth

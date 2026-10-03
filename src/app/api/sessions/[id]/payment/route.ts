@@ -7,7 +7,9 @@ export const dynamic = 'force-dynamic';
 
 function failure(error: unknown) {
   if (error instanceof XenditError) {
-    return NextResponse.json({ error: error.message }, { status: error.status >= 500 ? 502 : error.status });
+    // 503 rather than 502 for a failing Xendit: a Cloudflare tunnel replaces an origin's 502 with
+    // its own HTML page, which the kiosk cannot read.
+    return NextResponse.json({ error: error.message }, { status: error.status >= 500 ? 503 : error.status });
   }
   throw error;
 }

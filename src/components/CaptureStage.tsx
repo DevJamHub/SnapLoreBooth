@@ -5,7 +5,10 @@ import { useRouter } from 'next/navigation';
 import GuestHeader from '@/components/guest/GuestHeader';
 import { formatClock, useCountdown } from '@/components/guest/hooks';
 import { ArrowRight, Camera, Retry } from '@/components/guest/icons';
+import { TETHERED_FPS, useTetheredFeed } from '@/components/guest/useTetheredFeed';
 import type { CameraInfo } from '@/lib/camera/types';
+import { readEvents } from '@/lib/readEvents';
+import { readJson } from '@/lib/readJson';
 import { boardLayout, composeStrip } from '@/lib/strip';
 import type { CustomFrame, Session } from '@/lib/types';
 
@@ -24,10 +27,41 @@ const SHOW_MS = 1200;
 const SESSION_SECONDS = 10 * 60;
 const CLIP_BITRATE = 2_500_000;
 const CLIP_UPLOAD_WAIT_MS = 8000;
+/**
+ * Remembered per device: how long a tethered body takes from "shoot" to its shutter firing.
+ * Calibration in the console measures it; guest shots keep it current.
+ */
+export const SHUTTER_LAG_KEY = 'snaplorebooth.shutterLagMs';
+const DEFAULT_SHUTTER_LAG_MS = 800;
+/**
+ * A tethered shot is requested up to this long before zero, so its shutter lands near zero.
+ * Live view pauses from the request on, so a longer lead would freeze the viewfinder early.
+ */
+const MAX_LEAD_MS = 1000;
+
+type CaptureEvent = { type: 'fired' } | { type: 'done'; photo?: { file: string } } | { type: 'error'; error?: string };
 
 /** Shared with the operator camera page, which is where these are chosen. */
 export const CAMERA_DEVICE_KEY = 'snaplorebooth.cameraDeviceId';
-export const MIRROR_KEY = 'snaplorebooth.mirrorPreview';
+/**
+ * Per device: this device's own camera (the default, also when unset), or the Canon on the
+ * server. The console sets 'canon' only after it has detected the Canon ready.
+ */
+export const CAMERA_SOURCE_KEY = 'snaplorebooth.cameraSource';
+export type CameraSourceChoice = 'canon' | 'device';
+
+/** This device's own camera: the server's Canon is neither probed nor woken. */
+const DEVICE_CAMERA: CameraInfo = {
+  backend: 'browser',
+  ready: true,
+  model: null,
+  port: null,
+  serverLiveView: false,
+  message: null,
+  settings: null,
+  choices: null,
+  hint: null,
+};
 
 type Phase = 'ready' | 'counting' | 'shooting' | 'showing' | 'review' | 'error' | 'finishing';
 
@@ -69,6 +103,7 @@ export default function CaptureStage({
 }) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
+  const liveCanvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recordingRef = useRef<Recording | null>(null);
   const clipChain = useRef<Promise<unknown>>(Promise.resolve());
@@ -83,7 +118,8 @@ export default function CaptureStage({
   const [camera, setCamera] = useState<CameraInfo | null>(null);
   const [cameraProblem, setCameraProblem] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const [mirrored, setMirrored] = useState(true);
+  // Preview and result flip together, as the event was set when this session began.
+  const mirror = session.mirror;
   const [shots, setShots] = useState<Record<number, string>>(initialShots);
   const [queue, setQueue] = useState<number[]>([]);
   const [current, setCurrent] = useState<number | null>(null);
@@ -93,12 +129,33 @@ export default function CaptureStage({
   const [snap, setSnap] = useState<string | null>(null);
   const [board, setBoard] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  /** Why the last shot failed, in the guest's words. */
+  const [shotProblem, setShotProblem] = useState<string | null>(null);
+  /** The current shot's shutter has fired; until then a tethered booth says "Tahan!". */
+  const [fired, setFired] = useState(false);
+  /** The shot whose capture is already under way, so it is never asked for twice. */
+  const triggered = useRef<number | null>(null);
+  const lagRef = useRef(DEFAULT_SHUTTER_LAG_MS);
   /** First tap on a finished photo selects it (white border); a second tap retakes it. */
   const [selected, setSelected] = useState<number | null>(null);
 
   // A tethered body streams live view from the server; a webcam or capture card does not.
   const tethered = camera?.serverLiveView === true;
   const complete = slots.every((n) => shots[n]);
+
+  useTetheredFeed(liveCanvasRef, tethered && !cameraProblem, camera?.stillAspect ?? null);
+
+  // The tethered viewfinder canvas is what the countdown clips record.
+  useEffect(() => {
+    const canvas = liveCanvasRef.current;
+    if (!tethered || !canvas || typeof canvas.captureStream !== 'function') return;
+    const stream = canvas.captureStream(TETHERED_FPS);
+    streamRef.current = stream;
+    return () => {
+      stream.getTracks().forEach((t) => t.stop());
+      if (streamRef.current === stream) streamRef.current = null;
+    };
+  }, [tethered]);
 
   useEffect(() => {
     void fetch(`/api/sessions/${session.id}`, {
@@ -109,7 +166,15 @@ export default function CaptureStage({
   }, [session.id]);
 
   useEffect(() => {
-    setMirrored(readSetting(MIRROR_KEY) !== 'false');
+    const lag = Number(readSetting(SHUTTER_LAG_KEY));
+    if (Number.isFinite(lag) && lag > 0) lagRef.current = lag;
+  }, []);
+
+  useEffect(() => {
+    if (readSetting(CAMERA_SOURCE_KEY) !== 'canon') {
+      setCamera(DEVICE_CAMERA);
+      return;
+    }
     let cancelled = false;
     fetch('/api/camera', { cache: 'no-store' })
       .then((res) => res.json() as Promise<CameraInfo>)
@@ -156,7 +221,7 @@ export default function CaptureStage({
     let cancelled = false;
     composeStrip(
       slots.map((n) => shots[n] ?? null),
-      { format: session.format, filterId: session.filter, templateId: session.template, eventName, capturedAt: new Date(session.created_at), frame },
+      { format: session.format, filterId: session.filter, templateId: session.template, eventName, capturedAt: new Date(session.created_at), frame, mirror },
       0.75,
     )
       .then((url) => !cancelled && setBoard(url))
@@ -164,13 +229,13 @@ export default function CaptureStage({
     return () => {
       cancelled = true;
     };
-  }, [shots, slots, session.format, session.filter, session.template, session.created_at, eventName, frame]);
+  }, [shots, slots, session.format, session.filter, session.template, session.created_at, eventName, frame, mirror]);
 
   /** Starts recording the countdown, so every shot also gets its few seconds of video. */
   const startClip = useCallback(() => {
     const stream = streamRef.current;
     const mimeType = clipMimeType();
-    if (tethered || !stream || !mimeType) return;
+    if (!stream || !mimeType) return;
     try {
       const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: CLIP_BITRATE });
       const chunks: Blob[] = [];
@@ -185,7 +250,7 @@ export default function CaptureStage({
       // A browser that cannot record still takes the photo.
       recordingRef.current = null;
     }
-  }, [tethered]);
+  }, []);
 
   const stopClip = useCallback(async (): Promise<Blob | null> => {
     const recording = recordingRef.current;
@@ -220,20 +285,43 @@ export default function CaptureStage({
     return canvas.toDataURL('image/jpeg', 0.92);
   }, []);
 
+  /** Smoothed, so one slow autofocus does not throw the next countdown off. */
+  const rememberLag = useCallback((ms: number) => {
+    const next = Math.round(lagRef.current * 0.6 + Math.min(ms, 5000) * 0.4);
+    lagRef.current = next;
+    try {
+      localStorage.setItem(SHUTTER_LAG_KEY, String(next));
+    } catch {
+      // Private mode: the estimate lasts this page only.
+    }
+  }, []);
+
+  /** Takes the still; `onFired` runs the moment the shutter fires, with how long that took. */
   const takeStill = useCallback(
-    async (index: number): Promise<string> => {
+    async (index: number, onFired: (lagMs: number) => void): Promise<string> => {
       if (tethered) {
+        const started = performance.now();
         const res = await fetch('/api/camera/capture', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sessionId: session.id, index }),
         });
-        const data = (await res.json()) as { photo?: { file: string }; error?: string };
-        if (!res.ok || !data.photo) throw new Error(data.error);
-        return `/api/media/${data.photo.file.split('/').map(encodeURIComponent).join('/')}?v=${Date.now()}`;
+        if (!res.ok || !res.body) {
+          const data = await readJson<object>(res);
+          throw new Error(data.error ?? 'capture failed');
+        }
+        for await (const event of readEvents<CaptureEvent>(res.body)) {
+          if (event.type === 'fired') onFired(performance.now() - started);
+          else if (event.type === 'error') throw new Error(event.error ?? 'capture failed');
+          else if (event.type === 'done' && event.photo) {
+            return `/api/media/${event.photo.file.split('/').map(encodeURIComponent).join('/')}?v=${Date.now()}`;
+          }
+        }
+        throw new Error('the camera did not hand over a photo');
       }
       const dataUrl = grabFrame();
       if (!dataUrl) throw new Error('no frame');
+      onFired(0);
       const res = await fetch(`/api/sessions/${session.id}/photos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -248,6 +336,8 @@ export default function CaptureStage({
   const begin = useCallback(
     (indices: number[]) => {
       if (indices.length === 0) return;
+      triggered.current = null;
+      setFired(false);
       setSelected(null);
       setFailed(false);
       setCurrent(indices[0]);
@@ -267,7 +357,7 @@ export default function CaptureStage({
       await Promise.race([clipChain.current, wait(CLIP_UPLOAD_WAIT_MS)]);
       const dataUrl = await composeStrip(
         slots.map((n) => shots[n]),
-        { format: session.format, filterId: session.filter, templateId: session.template, eventName, capturedAt: new Date(session.created_at), frame },
+        { format: session.format, filterId: session.filter, templateId: session.template, eventName, capturedAt: new Date(session.created_at), frame, mirror },
       );
       const res = await fetch(`/api/sessions/${session.id}/strip`, {
         method: 'POST',
@@ -280,17 +370,23 @@ export default function CaptureStage({
       setFailed(true);
       setPhase('review');
     }
-  }, [eventName, frame, router, session.created_at, session.filter, session.format, session.id, session.template, shots, slots]);
+  }, [eventName, frame, mirror, router, session.created_at, session.filter, session.format, session.id, session.template, shots, slots]);
 
   const shoot = useCallback(async () => {
     const index = current;
     if (index === null) return;
-    setFlash(true);
-    setTimeout(() => setFlash(false), 480);
+    // A tethered body pauses live view to take the still, so its clip ends here.
+    const tetheredClip = tethered ? stopClip() : null;
     try {
-      const src = await takeStill(index);
-      // Keep recording a beat past the shutter, then stop: the clip ends on the moment of the photo.
-      void wait(150).then(stopClip).then((blob) => blob && queueClipUpload(index, blob));
+      const src = await takeStill(index, (lagMs) => {
+        // The shutter has just fired: flash now, so guests hold the pose until the real moment.
+        setFired(true);
+        setFlash(true);
+        setTimeout(() => setFlash(false), 480);
+        if (tethered) rememberLag(lagMs);
+      });
+      // A webcam keeps recording a beat past the shutter: the clip ends on the moment of the photo.
+      void (tetheredClip ?? wait(150).then(stopClip)).then((blob) => blob && queueClipUpload(index, blob));
       setShots((prev) => ({ ...prev, [index]: src }));
       setSnap(src);
       setPhase('showing');
@@ -303,25 +399,46 @@ export default function CaptureStage({
       }
       setCurrent(null);
       setPhase('review');
-    } catch {
+    } catch (err) {
       void stopClip();
+      // A tethered body that cannot focus refuses to fire; the guest can usually fix that.
+      const focus = err instanceof Error && /focus/i.test(err.message);
+      setShotProblem(focus ? 'Kamera belum bisa fokus. Mundur sedikit, lalu Coba lagi' : null);
       setPhase('error');
     }
-  }, [begin, current, queue, queueClipUpload, stopClip, takeStill]);
+  }, [begin, current, queue, queueClipUpload, rememberLag, stopClip, takeStill, tethered]);
 
   const shootRef = useRef(shoot);
   shootRef.current = shoot;
+
+  /** Starts the current shot once: from the early tethered request or at zero, whichever is first. */
+  const trigger = () => {
+    if (current === null || triggered.current === current) return;
+    triggered.current = current;
+    void shootRef.current();
+  };
+  const triggerRef = useRef(trigger);
+  triggerRef.current = trigger;
 
   useEffect(() => {
     if (phase !== 'counting') return;
     if (count <= 0) {
       setPhase('shooting');
-      void shootRef.current();
+      triggerRef.current();
       return;
     }
     const timer = setTimeout(() => setCount((c) => c - 1), 1000);
     return () => clearTimeout(timer);
   }, [phase, count]);
+
+  // A tethered body fires a moment after it is asked, so the request goes out early by the lag
+  // measured on earlier shots, and the shutter lands as the countdown reaches zero.
+  useEffect(() => {
+    if (phase !== 'counting' || !tethered) return;
+    const lead = Math.min(Math.max(lagRef.current, 0), MAX_LEAD_MS);
+    const timer = setTimeout(() => triggerRef.current(), COUNT_FROM * 1000 - lead);
+    return () => clearTimeout(timer);
+  }, [phase, current, tethered]);
 
   // When the session clock runs out, the sheet finishes itself as soon as it is whole.
   useEffect(() => {
@@ -360,22 +477,26 @@ export default function CaptureStage({
           <div className="fit cq">
             <div className="vf" style={{ aspectRatio: String(slotAspect), width: `min(100cqw, calc(100cqh * ${slotAspect}))` }}>
               {tethered ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img className="vf-feed" src="/api/camera/liveview" alt="" />
+                <canvas ref={liveCanvasRef} className="vf-feed" style={{ transform: mirror ? 'scaleX(-1)' : undefined }} />
               ) : (
-                <video ref={videoRef} className="vf-feed" autoPlay playsInline muted style={{ transform: mirrored ? 'scaleX(-1)' : undefined }} />
+                <video ref={videoRef} className="vf-feed" autoPlay playsInline muted style={{ transform: mirror ? 'scaleX(-1)' : undefined }} />
               )}
               {phase === 'counting' && count > 0 && (
                 <div className="vf-count" aria-live="assertive">
                   <span key={`${current}-${count}`}>{count}</span>
                 </div>
               )}
-              {(phase === 'counting' || phase === 'shooting') && <span className="vf-rec">● REC</span>}
+              {tethered && phase === 'shooting' && !fired && (
+                <div className="vf-count" aria-live="assertive">
+                  <span className="vf-hold">Tahan!</span>
+                </div>
+              )}
+              {(phase === 'counting' || (phase === 'shooting' && !tethered)) && <span className="vf-rec">● REC</span>}
               {flash && <div className="cap-flash" />}
               {snap && (
                 <div className="vf-snap">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={snap} alt={`Foto ${current}`} />
+                  <img src={snap} alt={`Foto ${current}`} style={{ transform: mirror ? 'scaleX(-1)' : undefined }} />
                 </div>
               )}
             </div>
@@ -444,7 +565,7 @@ export default function CaptureStage({
                 : phase === 'finishing'
                   ? 'Menyusun fotomu…'
                   : phase === 'error'
-                    ? `Foto ${current} belum tersimpan`
+                    ? (shotProblem ?? `Foto ${current} belum tersimpan`)
                     : POSES[((current ?? 1) - 1) % POSES.length]}
           </div>
         </div>
@@ -488,6 +609,12 @@ export default function CaptureStage({
               <Retry /> Coba lagi
             </button>
             <p className="mono" style={{ marginTop: 12 }}>{cameraProblem}</p>
+            {camera?.serverLiveView && (
+              <p className="mono" style={{ marginTop: 8 }}>
+                Petugas: nyalakan Canon dan cek kabel USB-nya, lalu Coba lagi. Testing tanpa Canon: Konsol → Kamera → Kamera
+                perangkat ini.
+              </p>
+            )}
           </div>
         </div>
       )}
