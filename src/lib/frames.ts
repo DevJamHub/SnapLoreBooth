@@ -8,6 +8,8 @@ interface FrameRow {
   id: string;
   name: string;
   format: string;
+  theme: string;
+  hidden: number;
   file: string;
   slots: string;
   created_at: string;
@@ -19,6 +21,7 @@ const MAX_FRAME_BYTES = 10 * 1024 * 1024;
 const MIN_FRAME_WIDTH = 600;
 const MIN_HOLE = 40;
 export const MAX_FRAME_NAME = 24;
+export const MAX_THEME_NAME = 20;
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
@@ -30,20 +33,40 @@ function hydrate(row: FrameRow | undefined): CustomFrame | null {
     id: row.id,
     name: row.name,
     format: row.format,
+    theme: row.theme,
+    hidden: row.hidden === 1,
     slots: JSON.parse(row.slots) as CustomFrame['slots'],
     src: `/api/frames/${row.id}`,
     created_at: row.created_at,
   };
 }
 
-/** Newest first, so a frame uploaded for tonight's event leads the list guests see. */
-export function listFrames(format?: string): CustomFrame[] {
+/**
+ * In upload order: guests see themes, and the frames in each, in the order the operator made
+ * them (Bioskop's ticket, then its popcorn bill).
+ */
+export function listFrames(format?: string, { offered = false } = {}): CustomFrame[] {
   const rows = (
     format
-      ? db.prepare('SELECT * FROM frames WHERE format = ? ORDER BY created_at DESC').all(format)
-      : db.prepare('SELECT * FROM frames ORDER BY created_at DESC').all()
+      ? db.prepare('SELECT * FROM frames WHERE format = ? ORDER BY created_at ASC').all(format)
+      : db.prepare('SELECT * FROM frames ORDER BY created_at ASC').all()
   ) as FrameRow[];
-  return rows.map((r) => hydrate(r)!);
+  const frames = rows.map((r) => hydrate(r)!);
+  // Guests only see what the operator offers; the console sees everything.
+  return offered ? frames.filter((f) => !f.hidden) : frames;
+}
+
+/** Every theme in use, in the order they first appeared. */
+export function frameThemes(): string[] {
+  return (db.prepare(`SELECT theme FROM frames WHERE theme != '' GROUP BY theme ORDER BY MIN(created_at) ASC`).all() as { theme: string }[]).map(
+    (r) => r.theme,
+  );
+}
+
+/** Spaces tidied, capped, and spelled like a theme already in use, so "bioskop" joins "Bioskop". */
+function cleanTheme(raw: string): string {
+  const theme = raw.replace(/\s+/g, ' ').trim().slice(0, MAX_THEME_NAME);
+  return frameThemes().find((t) => t.toLowerCase() === theme.toLowerCase()) ?? theme;
 }
 
 export function frameById(id: string): CustomFrame | null {
@@ -101,9 +124,10 @@ function validSlots(raw: unknown, shots: number): CustomFrame['slots'] {
  * Stores an uploaded frame. The holes are found in the operator's browser (it can decode the
  * PNG); the server checks the file really is a 4R portrait PNG and the holes fit the package.
  */
-export async function saveFrame(input: { name: string; format: string; slots: unknown; bytes: Uint8Array }): Promise<CustomFrame> {
+export async function saveFrame(input: { name: string; theme: string; format: string; slots: unknown; bytes: Uint8Array }): Promise<CustomFrame> {
   const name = input.name.trim().slice(0, MAX_FRAME_NAME);
   if (!name) throw new FrameInputError('nama frame wajib diisi');
+  const theme = cleanTheme(input.theme);
 
   const pkg = PACKAGES.find((p) => p.format === input.format);
   if (!pkg) throw new FrameInputError('paket frame tidak dikenal');
@@ -122,15 +146,29 @@ export async function saveFrame(input: { name: string; format: string; slots: un
   const file = `${id}.png`;
 
   await fs.writeFile(path.join(FRAME_DIR, file), input.bytes);
-  db.prepare('INSERT INTO frames (id, name, format, file, slots, created_at) VALUES (?, ?, ?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO frames (id, name, format, theme, file, slots, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
     id,
     name,
     pkg.format,
+    theme,
     file,
     JSON.stringify(slots),
     new Date().toISOString(),
   );
   return frameById(id)!;
+}
+
+/** Renames a frame, moves it to another theme, or hides it from guests; the picture and its holes stay. */
+export function updateFrame(id: string, input: { name?: unknown; theme?: unknown; hidden?: unknown }): CustomFrame | null {
+  const frame = frameById(id);
+  if (!frame) return null;
+  const name = input.name === undefined ? frame.name : String(input.name).trim().slice(0, MAX_FRAME_NAME);
+  if (!name) throw new FrameInputError('nama frame wajib diisi');
+  const theme = input.theme === undefined ? frame.theme : cleanTheme(String(input.theme));
+  if (input.hidden !== undefined && typeof input.hidden !== 'boolean') throw new FrameInputError('hidden harus true/false');
+  const hidden = input.hidden === undefined ? frame.hidden : input.hidden;
+  db.prepare('UPDATE frames SET name = ?, theme = ?, hidden = ? WHERE id = ?').run(name, theme, hidden ? 1 : 0, id);
+  return frameById(id);
 }
 
 /** Finished sheets keep their frame: it is already printed into them. */

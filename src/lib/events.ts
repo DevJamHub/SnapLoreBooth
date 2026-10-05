@@ -68,7 +68,8 @@ export function startEvent(input: { name: string; paymentMode?: PaymentMode; gal
     input.printMode ?? previous?.print_mode ?? 'simulated',
     // A new gig starts from the last one's prices; the operator rarely changes them.
     JSON.stringify(previous?.prices ?? defaultPrices()),
-    previous?.mirror ? 1 : 0,
+    // Guests see themselves as in a mirror unless the operator chose otherwise.
+    (previous?.mirror ?? true) ? 1 : 0,
   );
   return eventById(id)!;
 }

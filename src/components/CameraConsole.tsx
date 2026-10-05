@@ -1,12 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
 import BrowserCameraPanel from '@/components/BrowserCameraPanel';
 import CameraCalibration, { fireTestShot } from '@/components/CameraCalibration';
-import { CAMERA_SOURCE_KEY, type CameraSourceChoice } from '@/components/CaptureStage';
+import FocusPanel from '@/components/FocusPanel';
+import { CAMERA_SOURCE_KEY, type CameraSourceChoice } from '@/components/guest/deviceKeys';
 import MirrorPanel from '@/components/MirrorPanel';
+import OperatorHeader from '@/components/OperatorHeader';
 import type { CameraInfo, CameraSettings } from '@/lib/camera/types';
+import { PHONE_UA } from '@/lib/phone';
 import { readJson } from '@/lib/readJson';
 
 type TestState = { kind: 'idle' } | { kind: 'firing' } | { kind: 'ok'; src: string; ms: number } | { kind: 'failed'; message: string };
@@ -42,6 +44,8 @@ export default function CameraConsole({ initialMirror }: { initialMirror: boolea
   const [test, setTest] = useState<TestState>({ kind: 'idle' });
   const [saving, setSaving] = useState<string | null>(null);
   const [liveKey, setLiveKey] = useState(0);
+  /** On a phone this page looks after the booth's Canon; the phone itself never shoots. */
+  const [phone, setPhone] = useState(false);
 
   /** Asks the server for the external camera. Only a body that answers ready is returned. */
   const detect = useCallback(async (): Promise<CameraInfo | null> => {
@@ -78,6 +82,12 @@ export default function CameraConsole({ initialMirror }: { initialMirror: boolea
 
   // A device already set to the Canon checks it is still there.
   useEffect(() => {
+    if (PHONE_UA.test(navigator.userAgent)) {
+      setPhone(true);
+      setChoice('canon');
+      void detect();
+      return;
+    }
     const saved = readChoice();
     setChoice(saved);
     if (saved === 'canon') void detect();
@@ -127,32 +137,33 @@ export default function CameraConsole({ initialMirror }: { initialMirror: boolea
   const canon = choice === 'canon' && info?.ready === true;
 
   return (
-    <main className="kiosk">
-      <div className="topbar">
-        <div className="brand">
-          <strong>Kamera</strong>
-          <span className="mono">BOOTH</span>
-        </div>
-        <Link className="pill pill-ghost pill-sm" href="/operator" style={{ display: 'inline-flex', alignItems: 'center' }}>
-          Konsol
-        </Link>
-      </div>
+    <main className="op">
+      <OperatorHeader active="kamera" />
 
       <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-        <span className="mono">KAMERA BOOTH DI PERANGKAT INI</span>
-        <div className="segmented">
-          <button aria-pressed={choice === 'device'} onClick={chooseDevice}>
-            Kamera perangkat ini
-          </button>
-          <button aria-pressed={choice === 'canon'} onClick={() => void chooseCanon()} disabled={detecting}>
-            {detecting ? 'Mendeteksi Canon…' : 'Canon (USB)'}
-          </button>
-        </div>
-        <p className="muted" style={{ fontSize: 13 }}>
-          {choice === 'device'
-            ? 'Default: booth memakai kamera perangkat ini (MacBook, iPad, atau capture card). Canon tidak disentuh. Pilih Canon (USB) untuk mendeteksi dan memakainya.'
-            : 'Booth di perangkat ini memotret dengan Canon yang tersambung ke server. Kalibrasi sebelum acara.'}
-        </p>
+        <span className="mono">{phone ? 'KAMERA EKSTERNAL BOOTH' : 'KAMERA BOOTH DI PERANGKAT INI'}</span>
+        {phone ? (
+          <p className="muted" style={{ fontSize: 13 }}>
+            Dari HP kamu bisa cek, kalibrasi, dan test shot Canon yang tersambung ke server. Kamera yang dipakai layar booth
+            diatur di perangkat booth itu sendiri.
+          </p>
+        ) : (
+          <>
+            <div className="segmented">
+              <button aria-pressed={choice === 'device'} onClick={chooseDevice}>
+                Kamera perangkat ini
+              </button>
+              <button aria-pressed={choice === 'canon'} onClick={() => void chooseCanon()} disabled={detecting}>
+                {detecting ? 'Mendeteksi Canon…' : 'Canon (USB)'}
+              </button>
+            </div>
+            <p className="muted" style={{ fontSize: 13 }}>
+              {choice === 'device'
+                ? 'Default: booth memakai kamera perangkat ini (MacBook, iPad, atau capture card). Canon tidak disentuh. Pilih Canon (USB) untuk mendeteksi dan memakainya.'
+                : 'Booth di perangkat ini memotret dengan Canon yang tersambung ke server. Kalibrasi sebelum acara.'}
+            </p>
+          </>
+        )}
         {problem && (
           <div className="notice notice-error" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <span>{problem}</span>
@@ -162,7 +173,7 @@ export default function CameraConsole({ initialMirror }: { initialMirror: boolea
               <button className="pill pill-ghost pill-sm" onClick={() => void (choice === 'canon' ? detect() : chooseCanon())} disabled={detecting}>
                 Deteksi lagi
               </button>
-              {choice === 'canon' && (
+              {choice === 'canon' && !phone && (
                 <button className="pill pill-ghost pill-sm" onClick={chooseDevice}>
                   Pakai kamera perangkat ini
                 </button>
@@ -206,6 +217,7 @@ export default function CameraConsole({ initialMirror }: { initialMirror: boolea
 
             <section className="col-deck scroll">
               <CameraCalibration />
+              <FocusPanel locked={info.focusLocked === true} onChange={(focusLocked) => setInfo({ ...info, focusLocked })} />
               <MirrorPanel mirror={mirror} onChange={setMirror} />
 
               <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>

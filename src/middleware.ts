@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import { PHONE_UA } from '@/lib/phone';
 
 /**
  * The operator console and the session list expose guest email addresses and phone
@@ -24,7 +25,19 @@ function matches(candidate: string, expected: string): boolean {
   return diff === 0;
 }
 
+/** The booth's own screens. A guest's phone still reaches /d (photos) and /g (gallery). */
+const KIOSK_PATHS = /^\/(?:$|paket(?:\/|$)|hias\/|pay\/|capture\/|gaya\/|share\/)/;
+
 export function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  if (KIOSK_PATHS.test(pathname)) {
+    // On a phone the booth screens make no sense; the console is what an owner opens there.
+    if (PHONE_UA.test(request.headers.get('user-agent') ?? '')) {
+      return NextResponse.redirect(new URL('/operator', request.url));
+    }
+    return NextResponse.next();
+  }
+
   // Starting a session is the kiosk's own POST; only reading the list is sensitive.
   if (request.nextUrl.pathname === '/api/sessions' && request.method !== 'GET') return NextResponse.next();
 
@@ -51,5 +64,23 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/operator', '/operator/:path*', '/api/operator/:path*', '/api/sessions', '/api/camera/settings', '/api/camera/test', '/api/camera/status'],
+  matcher: [
+    // Booth screens, only to send phones to the console.
+    '/',
+    '/paket',
+    '/hias/:path*',
+    '/pay/:path*',
+    '/capture/:path*',
+    '/gaya/:path*',
+    '/share/:path*',
+    '/operator',
+    '/operator/:path*',
+    '/api/operator/:path*',
+    '/api/sessions',
+    '/api/camera/settings',
+    '/api/camera/test',
+    '/api/camera/calibrate',
+    '/api/camera/focus',
+    '/api/camera/status',
+  ],
 };

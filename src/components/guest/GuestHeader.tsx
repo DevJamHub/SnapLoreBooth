@@ -2,13 +2,14 @@
 
 import type { ReactNode } from 'react';
 
-export type StepId = 'pilih' | 'bayar' | 'foto' | 'gaya' | 'cetak';
+export type StepId = 'pilih' | 'hias' | 'bayar' | 'foto' | 'gaya' | 'cetak';
 
 const STEPS: { id: StepId; label: string }[] = [
   { id: 'pilih', label: 'Pilih' },
-  { id: 'gaya', label: 'Hias' },
+  { id: 'hias', label: 'Hias' },
   { id: 'bayar', label: 'Bayar' },
   { id: 'foto', label: 'Foto' },
+  { id: 'gaya', label: 'Gaya' },
   { id: 'cetak', label: 'Cetak' },
 ];
 
@@ -20,7 +21,7 @@ export function Logo() {
   );
 }
 
-/** Where the guest is in the five-step flow; the payment step disappears when the booth is free. */
+/** Where the guest is in the flow; the payment step disappears when the booth is free. */
 export function Steps({ current, payments }: { current: StepId; payments: boolean }) {
   const steps = STEPS.filter((s) => payments || s.id !== 'bayar');
   const at = steps.findIndex((s) => s.id === current);

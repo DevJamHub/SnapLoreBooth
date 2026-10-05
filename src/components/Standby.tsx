@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Logo } from '@/components/guest/GuestHeader';
 import { useLongPress } from '@/components/guest/hooks';
 import { ArrowRight } from '@/components/guest/icons';
+import type { BoothConfig } from '@/lib/config';
 import { formatPrice } from '@/lib/packages';
 
 // Placed to keep the headline, the button and the bottom chips clear at iPad landscape sizes.
@@ -19,9 +20,18 @@ const POLAROIDS = [
 const STATUS_POLL_MS = 60_000;
 
 /** The attract screen: what the booth shows between guests. Only the start button starts. */
-export default function Standby({ fromPrice, eventName }: { fromPrice: number | null; eventName: string | null }) {
+export default function Standby({
+  fromPrice,
+  eventName,
+  text,
+}: {
+  fromPrice: number | null;
+  eventName: string | null;
+  /** The operator's words for this screen (Konsol → Pengaturan → Layar awal). */
+  text: BoothConfig['standby'];
+}) {
   const router = useRouter();
-  const { holding, handlers } = useLongPress(3000, () => router.push('/operator'));
+  const { holding, handlers } = useLongPress(text.holdSeconds * 1000, () => router.push('/operator'));
 
   useEffect(() => {
     router.prefetch('/paket');
@@ -67,18 +77,22 @@ export default function Standby({ fromPrice, eventName }: { fromPrice: number | 
       ))}
 
       <div className="standby-center">
-        <span className="g-kicker">{eventName ?? 'Photobooth'}</span>
+        <span className="g-kicker">{text.kicker || eventName || 'Photobooth'}</span>
         <h1 className="standby-title">
-          Senyum dulu,
-          <br />
-          <em>yuk!</em>
+          {text.title}
+          {text.accent && (
+            <>
+              <br />
+              <em>{text.accent}</em>
+            </>
+          )}
         </h1>
         <button className="g-cta standby-touch" type="button" onClick={() => router.push('/paket')}>
-          Sentuh untuk mulai <ArrowRight />
+          {text.button} <ArrowRight />
         </button>
       </div>
 
-      <div className="standby-foot">
+      <div className="standby-foot" hidden={!text.chips}>
         {fromPrice === null ? (
           <span className="standby-chip">Gratis untuk tamu</span>
         ) : (

@@ -5,34 +5,40 @@ import { useRouter } from 'next/navigation';
 import GuestHeader from '@/components/guest/GuestHeader';
 import { formatClock, useCountdown } from '@/components/guest/hooks';
 import { ArrowRight, Camera, Retry } from '@/components/guest/icons';
+import { beep, shutterSound, unlockSound } from '@/components/guest/sounds';
+import { CAMERA_DEVICE_KEY, CAMERA_SOURCE_KEY, readDeviceSetting as readSetting, shutterLagKey } from '@/components/guest/deviceKeys';
 import { TETHERED_FPS, useTetheredFeed } from '@/components/guest/useTetheredFeed';
 import type { CameraInfo } from '@/lib/camera/types';
+import { mediaUrl } from '@/lib/format';
 import { readEvents } from '@/lib/readEvents';
 import { readJson } from '@/lib/readJson';
-import { boardLayout, composeStrip } from '@/lib/strip';
+import { boardLayout, composeStrip, recorderMimeType } from '@/lib/strip';
 import type { CustomFrame, Session } from '@/lib/types';
 
-const POSES = [
-  'Senyum paling manis!',
-  'Gaya paling heboh!',
-  'Saling lihat, terus ketawa',
-  'Pose andalan kamu!',
-  'Pasang muka kaget!',
-  'Rapat-rapat, peluk!',
-];
-/** Every shot counts down this long, and the live clip records these same seconds. */
-const COUNT_FROM = 3;
-const SHOW_MS = 1200;
-/** The whole photo session; when it ends, missing shots are taken and the sheet prints. */
-const SESSION_SECONDS = 10 * 60;
-const CLIP_BITRATE = 2_500_000;
+/** How the photo session runs, from Konsol → Pengaturan. */
+export interface CaptureSettings {
+  /** Every shot counts down this long, and the live clip records these same seconds. */
+  countdown: number;
+  /** Beep each second and click on the shutter. */
+  sound: boolean;
+  /** How long each new photo is shown before the next countdown. */
+  showMs: number;
+  /** The whole photo session; when it ends, missing shots are taken and the guest moves on. */
+  sessionSeconds: number;
+  retake: boolean;
+  prompts: string[];
+  /** Record each countdown as video, at this bitrate; null records none. */
+  clipBitrate: number | null;
+  /** Photos from this device's camera are kept at most this long on their long edge (0: as is). */
+  maxEdge: number;
+  /** JPEG quality, 0–1. */
+  quality: number;
+}
+
 const CLIP_UPLOAD_WAIT_MS = 8000;
-/**
- * Remembered per device: how long a tethered body takes from "shoot" to its shutter firing.
- * Calibration in the console measures it; guest shots keep it current.
- */
-export const SHUTTER_LAG_KEY = 'snaplorebooth.shutterLagMs';
 const DEFAULT_SHUTTER_LAG_MS = 800;
+/** With the focus locked there is no autofocus before the shutter. */
+const DEFAULT_LOCKED_LAG_MS = 400;
 /**
  * A tethered shot is requested up to this long before zero, so its shutter lands near zero.
  * Live view pauses from the request on, so a longer lead would freeze the viewfinder early.
@@ -40,15 +46,6 @@ const DEFAULT_SHUTTER_LAG_MS = 800;
 const MAX_LEAD_MS = 1000;
 
 type CaptureEvent = { type: 'fired' } | { type: 'done'; photo?: { file: string } } | { type: 'error'; error?: string };
-
-/** Shared with the operator camera page, which is where these are chosen. */
-export const CAMERA_DEVICE_KEY = 'snaplorebooth.cameraDeviceId';
-/**
- * Per device: this device's own camera (the default, also when unset), or the Canon on the
- * server. The console sets 'canon' only after it has detected the Canon ready.
- */
-export const CAMERA_SOURCE_KEY = 'snaplorebooth.cameraSource';
-export type CameraSourceChoice = 'canon' | 'device';
 
 /** This device's own camera: the server's Canon is neither probed nor woken. */
 const DEVICE_CAMERA: CameraInfo = {
@@ -65,22 +62,7 @@ const DEVICE_CAMERA: CameraInfo = {
 
 type Phase = 'ready' | 'counting' | 'shooting' | 'showing' | 'review' | 'error' | 'finishing';
 
-function readSetting(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Safari records MP4, Chrome either; null when this browser cannot record at all. */
-function clipMimeType(): string | null {
-  if (typeof MediaRecorder === 'undefined') return null;
-  const candidates = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
-  return candidates.find((type) => MediaRecorder.isTypeSupported?.(type)) ?? null;
-}
 
 interface Recording {
   recorder: MediaRecorder;
@@ -93,6 +75,8 @@ export default function CaptureStage({
   eventName,
   initialShots,
   frame,
+  settings,
+  showDate,
 }: {
   session: Session;
   payments: boolean;
@@ -100,7 +84,11 @@ export default function CaptureStage({
   initialShots: Record<number, string>;
   /** The uploaded frame the guest chose in Hias; null for a built-in one. */
   frame: CustomFrame | null;
+  settings: CaptureSettings;
+  showDate: boolean;
 }) {
+  const COUNT_FROM = settings.countdown;
+  const POSES = settings.prompts;
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
   const liveCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -118,8 +106,10 @@ export default function CaptureStage({
   const [camera, setCamera] = useState<CameraInfo | null>(null);
   const [cameraProblem, setCameraProblem] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  // Preview and result flip together, as the event was set when this session began.
-  const mirror = session.mirror;
+  // Preview and result flip together. Starts as the event's default; the guest can switch it
+  // whenever no shot is under way, and every photo on the sheet follows.
+  const [mirror, setMirror] = useState(session.mirror);
+  const [savingMirror, setSavingMirror] = useState(false);
   const [shots, setShots] = useState<Record<number, string>>(initialShots);
   const [queue, setQueue] = useState<number[]>([]);
   const [current, setCurrent] = useState<number | null>(null);
@@ -128,7 +118,6 @@ export default function CaptureStage({
   const [flash, setFlash] = useState(false);
   const [snap, setSnap] = useState<string | null>(null);
   const [board, setBoard] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
   /** Why the last shot failed, in the guest's words. */
   const [shotProblem, setShotProblem] = useState<string | null>(null);
   /** The current shot's shutter has fired; until then a tethered booth says "Tahan!". */
@@ -165,10 +154,14 @@ export default function CaptureStage({
     });
   }, [session.id]);
 
+  /** Where this device keeps the lag for the body's current focus mode. */
+  const lagKeyRef = useRef(shutterLagKey(false));
   useEffect(() => {
-    const lag = Number(readSetting(SHUTTER_LAG_KEY));
-    if (Number.isFinite(lag) && lag > 0) lagRef.current = lag;
-  }, []);
+    if (!camera) return;
+    lagKeyRef.current = shutterLagKey(camera.focusLocked);
+    const lag = Number(readSetting(lagKeyRef.current));
+    lagRef.current = Number.isFinite(lag) && lag > 0 ? lag : camera.focusLocked ? DEFAULT_LOCKED_LAG_MS : DEFAULT_SHUTTER_LAG_MS;
+  }, [camera]);
 
   useEffect(() => {
     if (readSetting(CAMERA_SOURCE_KEY) !== 'canon') {
@@ -216,12 +209,13 @@ export default function CaptureStage({
     };
   }, [camera, tethered]);
 
-  // The right-hand sheet fills in shot by shot, in the frame and look chosen in Hias.
+  // The right-hand sheet fills in shot by shot, in the frame chosen in Hias. The look and
+  // beauty come after, on Gaya, so the photos show as shot.
   useEffect(() => {
     let cancelled = false;
     composeStrip(
       slots.map((n) => shots[n] ?? null),
-      { format: session.format, filterId: session.filter, templateId: session.template, eventName, capturedAt: new Date(session.created_at), frame, mirror },
+      { format: session.format, filterId: 'original', templateId: session.template, eventName, capturedAt: new Date(session.created_at), frame, mirror, showDate },
       0.75,
     )
       .then((url) => !cancelled && setBoard(url))
@@ -229,15 +223,15 @@ export default function CaptureStage({
     return () => {
       cancelled = true;
     };
-  }, [shots, slots, session.format, session.filter, session.template, session.created_at, eventName, frame, mirror]);
+  }, [shots, slots, session.format, session.template, session.created_at, eventName, frame, mirror, showDate]);
 
   /** Starts recording the countdown, so every shot also gets its few seconds of video. */
   const startClip = useCallback(() => {
     const stream = streamRef.current;
-    const mimeType = clipMimeType();
-    if (!stream || !mimeType) return;
+    const mimeType = recorderMimeType();
+    if (!stream || !mimeType || !settings.clipBitrate) return;
     try {
-      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: CLIP_BITRATE });
+      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: settings.clipBitrate });
       const chunks: Blob[] = [];
       recorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data);
       const done = new Promise<Blob | null>((resolve) => {
@@ -250,7 +244,7 @@ export default function CaptureStage({
       // A browser that cannot record still takes the photo.
       recordingRef.current = null;
     }
-  }, []);
+  }, [settings.clipBitrate]);
 
   const stopClip = useCallback(async (): Promise<Blob | null> => {
     const recording = recordingRef.current;
@@ -272,25 +266,30 @@ export default function CaptureStage({
     [session.id],
   );
 
-  /** Saves what the sensor saw: no mirror, no filter. The look is applied once, on the sheet. */
+  /**
+   * Saves what the sensor saw: no mirror, no filter. The look is applied once, on the sheet.
+   * A camera bigger than the configured size is scaled down, as the server does for a Canon.
+   */
   const grabFrame = useCallback((): string | null => {
     const video = videoRef.current;
     if (!video || !video.videoWidth) return null;
+    const long = Math.max(video.videoWidth, video.videoHeight);
+    const scale = settings.maxEdge > 0 && long > settings.maxEdge ? settings.maxEdge / long : 1;
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.92);
-  }, []);
+    return canvas.toDataURL('image/jpeg', settings.quality);
+  }, [settings.maxEdge, settings.quality]);
 
   /** Smoothed, so one slow autofocus does not throw the next countdown off. */
   const rememberLag = useCallback((ms: number) => {
     const next = Math.round(lagRef.current * 0.6 + Math.min(ms, 5000) * 0.4);
     lagRef.current = next;
     try {
-      localStorage.setItem(SHUTTER_LAG_KEY, String(next));
+      localStorage.setItem(lagKeyRef.current, String(next));
     } catch {
       // Private mode: the estimate lasts this page only.
     }
@@ -314,7 +313,7 @@ export default function CaptureStage({
           if (event.type === 'fired') onFired(performance.now() - started);
           else if (event.type === 'error') throw new Error(event.error ?? 'capture failed');
           else if (event.type === 'done' && event.photo) {
-            return `/api/media/${event.photo.file.split('/').map(encodeURIComponent).join('/')}?v=${Date.now()}`;
+            return mediaUrl(event.photo.file, String(Date.now()));
           }
         }
         throw new Error('the camera did not hand over a photo');
@@ -336,10 +335,10 @@ export default function CaptureStage({
   const begin = useCallback(
     (indices: number[]) => {
       if (indices.length === 0) return;
+      if (settings.sound) unlockSound();
       triggered.current = null;
       setFired(false);
       setSelected(null);
-      setFailed(false);
       setCurrent(indices[0]);
       setQueue(indices.slice(1));
       setCount(COUNT_FROM);
@@ -349,28 +348,32 @@ export default function CaptureStage({
     [startClip],
   );
 
+  /** On to Gaya, where the guest picks the look and beauty and the sheet is made. */
   const finish = useCallback(async () => {
     setPhase('finishing');
-    setFailed(false);
+    // Give live clips a moment to finish uploading so the QR page has them.
+    await Promise.race([clipChain.current, wait(CLIP_UPLOAD_WAIT_MS)]);
+    router.push(`/gaya/${session.id}`);
+  }, [router, session.id]);
+
+  const toggleMirror = async () => {
+    const next = !mirror;
+    setMirror(next);
+    setSavingMirror(true);
     try {
-      // Give live clips a moment to finish uploading so the QR page has them.
-      await Promise.race([clipChain.current, wait(CLIP_UPLOAD_WAIT_MS)]);
-      const dataUrl = await composeStrip(
-        slots.map((n) => shots[n]),
-        { format: session.format, filterId: session.filter, templateId: session.template, eventName, capturedAt: new Date(session.created_at), frame, mirror },
-      );
-      const res = await fetch(`/api/sessions/${session.id}/strip`, {
-        method: 'POST',
+      const res = await fetch(`/api/sessions/${session.id}`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dataUrl }),
+        body: JSON.stringify({ mirror: next }),
       });
       if (!res.ok) throw new Error();
-      router.push(`/share/${session.id}`);
     } catch {
-      setFailed(true);
-      setPhase('review');
+      // Not saved means the print would not match: the screen goes back to what will print.
+      setMirror(!next);
+    } finally {
+      setSavingMirror(false);
     }
-  }, [eventName, frame, mirror, router, session.created_at, session.filter, session.format, session.id, session.template, shots, slots]);
+  };
 
   const shoot = useCallback(async () => {
     const index = current;
@@ -381,6 +384,7 @@ export default function CaptureStage({
       const src = await takeStill(index, (lagMs) => {
         // The shutter has just fired: flash now, so guests hold the pose until the real moment.
         setFired(true);
+        if (settings.sound) shutterSound();
         setFlash(true);
         setTimeout(() => setFlash(false), 480);
         if (tethered) rememberLag(lagMs);
@@ -390,7 +394,7 @@ export default function CaptureStage({
       setShots((prev) => ({ ...prev, [index]: src }));
       setSnap(src);
       setPhase('showing');
-      await wait(SHOW_MS);
+      await wait(settings.showMs);
       setSnap(null);
 
       if (queue.length > 0) {
@@ -422,6 +426,8 @@ export default function CaptureStage({
 
   useEffect(() => {
     if (phase !== 'counting') return;
+    // Higher on the last second, so the guest hears the moment coming.
+    if (settings.sound && count > 0) beep(count === 1 ? 1320 : 880);
     if (count <= 0) {
       setPhase('shooting');
       triggerRef.current();
@@ -454,10 +460,10 @@ export default function CaptureStage({
   };
   const onSessionEndRef = useRef(onSessionEnd);
   onSessionEndRef.current = onSessionEnd;
-  const left = useCountdown(SESSION_SECONDS, true, () => onSessionEndRef.current());
+  const left = useCountdown(settings.sessionSeconds, true, () => onSessionEndRef.current());
 
   const tapSlot = (index: number) => {
-    if (phase !== 'review' || !shots[index]) return;
+    if (phase !== 'review' || !shots[index] || !settings.retake) return;
     if (selected === index) begin([index]);
     else setSelected(index);
   };
@@ -474,6 +480,15 @@ export default function CaptureStage({
 
       <div className="cap2-body">
         <section className="cap2-camera">
+          <button
+            className="cap2-mirror"
+            aria-pressed={mirror}
+            onClick={() => void toggleMirror()}
+            disabled={savingMirror || !(phase === 'ready' || phase === 'review' || phase === 'error')}
+          >
+            <span className="cap2-switch" />
+            Mode cermin
+          </button>
           <div className="fit cq">
             <div className="vf" style={{ aspectRatio: String(slotAspect), width: `min(100cqw, calc(100cqh * ${slotAspect}))` }}>
               {tethered ? (
@@ -505,7 +520,7 @@ export default function CaptureStage({
 
         <section className="cap2-sheet">
           <p className="cap2-sheet-hint" data-active={phase === 'review'}>
-            {phase === 'review' ? 'Klik 2 kali pada foto untuk retake' : 'Frame kamu'}
+            {phase === 'review' && settings.retake ? 'Klik 2 kali pada foto untuk retake' : 'Frame kamu'}
           </p>
           <div className="fit cq">
             <div className="sheet" style={{ aspectRatio: `${layout.width} / ${layout.height}`, width: `min(100cqw, calc(100cqh * ${layout.width / layout.height}))` }}>
@@ -516,7 +531,7 @@ export default function CaptureStage({
               {layout.slots.map((slot, i) => {
                 const n = i + 1;
                 const active = n === current && phase !== 'review';
-                const canRetake = phase === 'review' && !!shots[n];
+                const canRetake = phase === 'review' && !!shots[n] && settings.retake;
                 return (
                   <button
                     key={n}
@@ -557,11 +572,15 @@ export default function CaptureStage({
           </div>
           <div className="g-bar-value cap2-hint">
             {phase === 'ready'
-              ? `${session.shots} pose · 3 detik tiap foto`
+              ? `${session.shots} pose · ${COUNT_FROM} detik tiap foto`
               : phase === 'review'
-                ? selected !== null
-                  ? 'Klik sekali lagi untuk retake'
-                  : 'Klik 2 kali pada foto untuk retake'
+                ? !settings.retake
+                  ? complete
+                    ? 'Lanjut pilih gaya'
+                    : 'Foto yang kosong diambil lagi'
+                  : selected !== null
+                    ? 'Klik sekali lagi untuk retake'
+                    : 'Klik 2 kali pada foto untuk retake'
                 : phase === 'finishing'
                   ? 'Menyusun fotomu…'
                   : phase === 'error'
@@ -570,7 +589,6 @@ export default function CaptureStage({
           </div>
         </div>
         <span className="g-spacer" />
-        {failed && <span className="g-error" style={{ padding: '10px 14px' }}>Gagal menyimpan, coba lagi</span>}
         {phase === 'ready' && (
           <button className="g-cta" onClick={() => begin(slots.filter((n) => !shots[n]))} disabled={camera === null || !!cameraProblem}>
             <Camera /> Mulai foto
@@ -588,7 +606,7 @@ export default function CaptureStage({
         )}
         {(phase === 'review' || phase === 'finishing') && complete && (
           <button className="g-cta" onClick={() => void finish()} disabled={phase === 'finishing'}>
-            {phase === 'finishing' ? 'Menyimpan…' : 'Lanjut cetak'} <ArrowRight />
+            {phase === 'finishing' ? 'Menyimpan…' : 'Pilih gaya'} <ArrowRight />
           </button>
         )}
       </div>

@@ -1,11 +1,11 @@
 import { notFound } from 'next/navigation';
 import LivePanel from '@/components/LivePanel';
 import LoopVideo from '@/components/LoopVideo';
+import { getConfig } from '@/lib/config';
 import { getSession, listPhotos } from '@/lib/db';
+import { mediaUrl } from '@/lib/format';
 
 export const dynamic = 'force-dynamic';
-
-const mediaUrl = (file: string) => `/api/media/${file.split('/').map(encodeURIComponent).join('/')}`;
 
 /** What a guest's phone opens after scanning the booth QR code. */
 export default async function DownloadPage({ params }: { params: Promise<{ id: string }> }) {
@@ -15,6 +15,9 @@ export default async function DownloadPage({ params }: { params: Promise<{ id: s
 
   const photos = listPhotos(id);
   const clips = photos.filter((p) => p.clip_file);
+  const config = getConfig();
+  // Waiting for a whole-sheet video only makes sense while the booth makes them.
+  const live = clips.length > 0 && (session.live_file !== null || config.share.liveVideo);
 
   return (
     <main className="dl">
@@ -22,6 +25,7 @@ export default async function DownloadPage({ params }: { params: Promise<{ id: s
         Snaplore<span>Booth</span>
       </span>
       <h1 className="g-title" style={{ fontSize: 40 }}>Fotomu sudah siap</h1>
+      {config.share.message && <p className="dl-message">{config.share.message}</p>}
       <p className="g-lead" style={{ fontSize: 17 }}>
         Tekan lama pada foto atau video lalu pilih <b>Simpan</b>, atau pakai tombol download.
       </p>
@@ -33,7 +37,7 @@ export default async function DownloadPage({ params }: { params: Promise<{ id: s
         Download foto
       </a>
 
-      {clips.length > 0 && <LivePanel sessionId={session.id} initialFile={session.live_file} poster={mediaUrl(session.strip_file)} />}
+      {live && <LivePanel sessionId={session.id} initialFile={session.live_file} poster={mediaUrl(session.strip_file)} />}
 
       {clips.length > 0 && (
         <>

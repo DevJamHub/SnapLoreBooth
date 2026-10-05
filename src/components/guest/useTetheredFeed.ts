@@ -4,7 +4,7 @@ import { useEffect, useRef, type RefObject } from 'react';
 
 const RETRY_MS = 1000;
 /** Frames come at most this fast from the server; the clip recorder samples the canvas at it. */
-export const TETHERED_FPS = 24;
+export const TETHERED_FPS = 30;
 
 const encoder = new TextEncoder();
 const HEADER_END = encoder.encode('\r\n\r\n');
@@ -68,6 +68,10 @@ async function decode(jpeg: Uint8Array): Promise<ImageBitmap | HTMLImageElement>
  * Plays a tethered camera's live view into a canvas, reconnecting if the stream drops (the
  * body pauses it for every still). The canvas is both the guest's viewfinder and what the
  * live clip records, so a Canon gets the same few-second videos as a webcam.
+ *
+ * Only the newest frame is ever drawn: when frames arrive in a clump (a slow network, a busy
+ * tablet) the stale ones are skipped instead of played late. A hidden tab lets go of the
+ * stream, so a second booth tab does not halve the first one's bandwidth.
  */
 export function useTetheredFeed(
   canvasRef: RefObject<HTMLCanvasElement | null>,
@@ -106,27 +110,65 @@ export function useTetheredFeed(
       ctx.drawImage(frame, (width - w) / 2, (height - h) / 2, w, h, 0, 0, w, h);
     };
 
+    let latest: Uint8Array | null = null;
+    let drawing = false;
+    const show = async () => {
+      if (drawing) return;
+      drawing = true;
+      try {
+        while (latest && !stopped) {
+          const jpeg = latest;
+          latest = null;
+          const frame = await decode(jpeg).catch(() => null);
+          if (!frame) continue;
+          if (!stopped) draw(frame);
+          if ('close' in frame) frame.close();
+        }
+      } finally {
+        drawing = false;
+      }
+    };
+
+    let connection: AbortController | null = null;
+    let wake: (() => void) | null = null;
+    const onVisibility = () => {
+      if (document.hidden) connection?.abort();
+      else wake?.();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+
     void (async () => {
       while (!stopped) {
+        if (document.hidden) {
+          await new Promise<void>((resolve) => (wake = resolve));
+          wake = null;
+          continue;
+        }
+        connection = new AbortController();
+        const abort = () => connection?.abort();
+        controller.signal.addEventListener('abort', abort, { once: true });
         try {
-          const res = await fetch('/api/camera/liveview', { signal: controller.signal, cache: 'no-store' });
+          const res = await fetch('/api/camera/liveview', { signal: connection.signal, cache: 'no-store' });
           if (!res.ok || !res.body) throw new Error('no live view');
           for await (const jpeg of jpegParts(res.body)) {
             if (stopped) break;
-            const frame = await decode(jpeg);
-            draw(frame);
-            if ('close' in frame) frame.close();
+            latest = jpeg;
+            void show();
           }
         } catch {
-          // Dropped or refused: try again shortly, unless the screen is gone.
+          // Dropped, refused or hidden: try again shortly, unless the screen is gone.
+        } finally {
+          controller.signal.removeEventListener('abort', abort);
         }
-        if (!stopped) await new Promise((r) => setTimeout(r, RETRY_MS));
+        if (!stopped && !document.hidden) await new Promise((r) => setTimeout(r, RETRY_MS));
       }
     })();
 
     return () => {
       stopped = true;
       controller.abort();
+      wake?.();
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [canvasRef, enabled]);
 }

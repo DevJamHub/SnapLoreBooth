@@ -57,6 +57,45 @@ export function filterCss(id: string): string {
   return ops.length ? ops.map((o) => `${o.op}(${o.v})`).join(' ') : 'none';
 }
 
+/**
+ * Skin smoothing, applied to each photo before its colour look. A few named levels, so the
+ * guest picks a feeling rather than a number. See applyBeauty() in beauty.ts.
+ */
+export interface BeautyLevel {
+  id: string;
+  label: string;
+  blurb: string;
+  /** How far skin moves toward its smoothed self, 0–1. */
+  smooth: number;
+  /** Smoothing radius as a fraction of the photo's shorter side, so a face smooths alike in every slot size. */
+  radius: number;
+  /**
+   * How different from its surroundings (in 0–255 brightness) a detail may be and still be
+   * smoothed away; above it, it is an edge and stays. Eyes and brows sit far above either.
+   */
+  edge: number;
+  /** Lift toward white on skin, 0–1. */
+  lift: number;
+  /** Red added and blue taken from skin, in 0–255 steps. */
+  warmth: number;
+}
+
+export const BEAUTY: BeautyLevel[] = [
+  { id: 'off', label: 'Mati', blurb: 'Foto apa adanya', smooth: 0, radius: 0, edge: 0, lift: 0, warmth: 0 },
+  { id: 'natural', label: 'Natural', blurb: 'Kulit lebih halus, tetap kamu', smooth: 0.65, radius: 0.008, edge: 26, lift: 0.04, warmth: 0 },
+  { id: 'glow', label: 'Glowing', blurb: 'Lebih halus dan cerah', smooth: 0.9, radius: 0.012, edge: 44, lift: 0.1, warmth: 4 },
+];
+
+export function beautyLevel(id: string | undefined): BeautyLevel | null {
+  const level = BEAUTY.find((b) => b.id === id);
+  return level && level.smooth + level.lift > 0 ? level : null;
+}
+
+/** Guests browse frames by theme; the frames that ship with the booth sit under this one. */
+export const BUILTIN_THEME = 'Simpel';
+/** Uploaded frames the operator gave no theme. */
+export const UNSORTED_THEME = 'Lainnya';
+
 /** A frame design. Add one by adding an entry here. */
 export interface BoothTemplate {
   id: string;

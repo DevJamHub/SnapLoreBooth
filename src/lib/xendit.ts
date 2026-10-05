@@ -40,17 +40,30 @@ export function isTestMode(): boolean {
   return process.env.XENDIT_SECRET_KEY?.startsWith('xnd_development_') === true;
 }
 
+/**
+ * A hung request would never settle: the QR being issued for that session (shared by every
+ * screen asking, see ensurePayment) would wait forever and the guest could never pay.
+ */
+const TIMEOUT_MS = 15_000;
+
 async function call<T>(path: string, init: { method: 'GET' | 'POST'; body?: unknown }): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: init.method,
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${secretKey()}:`).toString('base64')}`,
-      'api-version': API_VERSION,
-      'Content-Type': 'application/json',
-    },
-    body: init.body === undefined ? undefined : JSON.stringify(init.body),
-    cache: 'no-store',
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: init.method,
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${secretKey()}:`).toString('base64')}`,
+        'api-version': API_VERSION,
+        'Content-Type': 'application/json',
+      },
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && error.name === 'TimeoutError';
+    throw new XenditError(timedOut ? 'Xendit tidak menjawab; coba lagi' : 'Tidak bisa menghubungi Xendit; cek internet booth', 503);
+  }
   const data = (await res.json().catch(() => ({}))) as T & { message?: string; error_code?: string };
   if (!res.ok) throw new XenditError(data.message ?? data.error_code ?? `Xendit answered ${res.status}`, res.status);
   return data;

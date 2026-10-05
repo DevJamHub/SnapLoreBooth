@@ -25,6 +25,10 @@ function r2(): R2Config | null {
   return cached;
 }
 
+/** A photo or clip over a venue's upload can take a while; a hung connection must still end. */
+const UPLOAD_TIMEOUT_MS = 120_000;
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export function cloudEnabled(): boolean {
   return r2() !== null;
 }
@@ -41,6 +45,7 @@ export async function putObject(key: string, body: Uint8Array, contentType: stri
     // slice() yields an ArrayBuffer-backed copy, which is what fetch's body type accepts.
     body: body.slice(),
     headers: { 'Content-Type': contentType },
+    signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`R2 PUT ${key} answered ${res.status}`);
 }
@@ -55,15 +60,25 @@ export async function signedGetUrl(key: string, seconds = 300): Promise<string |
   return signed.url;
 }
 
+/** Deletes one stored object; a missing one counts as deleted. */
+export async function deleteObject(key: string): Promise<void> {
+  const config = r2();
+  if (!config) return;
+  const res = await config.client.fetch(objectUrl(config, key), { method: 'DELETE', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  if (!res.ok && res.status !== 404) throw new Error(`R2 DELETE ${key} answered ${res.status}`);
+}
+
 /** Deletes every object under `prefix/` — one guest session's photos. */
 export async function deletePrefix(prefix: string): Promise<number> {
   const config = r2();
   if (!config) return 0;
-  const list = await config.client.fetch(`${config.base}?list-type=2&prefix=${encodeURIComponent(`${prefix}/`)}`);
+  const list = await config.client.fetch(`${config.base}?list-type=2&prefix=${encodeURIComponent(`${prefix}/`)}`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
   if (!list.ok) throw new Error(`R2 list ${prefix} answered ${list.status}`);
   const keys = [...(await list.text()).matchAll(/<Key>([^<]+)<\/Key>/g)].map((m) => m[1]);
   for (const key of keys) {
-    const res = await config.client.fetch(objectUrl(config, decodeXml(key)), { method: 'DELETE' });
+    const res = await config.client.fetch(objectUrl(config, decodeXml(key)), { method: 'DELETE', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     if (!res.ok && res.status !== 404) throw new Error(`R2 DELETE ${key} answered ${res.status}`);
   }
   return keys.length;

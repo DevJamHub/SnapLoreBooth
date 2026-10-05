@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import { camera } from '@/lib/camera';
+import { getConfig } from '@/lib/config';
 import { addPhoto, getSession, listPhotos } from '@/lib/db';
 import { sessionUnlocked } from '@/lib/payments';
-import { mirrorFile } from '@/lib/storage';
+import { mirrorFile, optimizeStill } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,6 +22,7 @@ export async function POST(request: Request) {
   const session = getSession(sessionId);
   if (!session) return NextResponse.json({ error: 'session not found' }, { status: 404 });
   if (!sessionUnlocked(sessionId)) return NextResponse.json({ error: 'session is not paid' }, { status: 402 });
+  if (session.strip_file) return NextResponse.json({ error: 'sheet already made' }, { status: 409 });
 
   const index = Number(body.index);
   if (!Number.isInteger(index) || index < 1 || index > session.shots) {
@@ -42,8 +44,12 @@ export async function POST(request: Request) {
       };
       try {
         const result = await source.capture(sessionId, index, () => send({ type: 'fired' }));
+        // A camera's full-size file is several MB: kept at the configured size, it loads on the
+        // kiosk faster and takes a fraction of the disk.
+        const { maxEdge, quality } = getConfig().storage;
+        await optimizeStill(result.file, maxEdge, quality);
         // Tethered stills land on disk straight from the camera, so they are copied off-site here.
-        await mirrorFile(result.file);
+        void mirrorFile(result.file);
         const photo = addPhoto(sessionId, index, result.file);
         send({ type: 'done', photo, bytes: result.bytes, photos: listPhotos(sessionId) });
       } catch (error) {

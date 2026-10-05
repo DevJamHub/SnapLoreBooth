@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import { JetBrains_Mono, Newsreader, Plus_Jakarta_Sans } from 'next/font/google';
 import './globals.css';
 import './guest.css';
+import BoothBeacon from '@/components/BoothBeacon';
 
 const display = Newsreader({ subsets: ['latin'], variable: '--font-display', display: 'swap' });
 const body = Plus_Jakarta_Sans({ subsets: ['latin'], variable: '--font-body', display: 'swap' });
@@ -23,7 +24,10 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="id" className={`${display.variable} ${body.variable} ${mono.variable}`}>
-      <body>{children}</body>
+      <body>
+        {children}
+        <BoothBeacon />
+      </body>
     </html>
   );
 }

@@ -1,9 +1,9 @@
-import { headers } from 'next/headers';
 import { notFound } from 'next/navigation';
 import QRCode from 'qrcode';
 import LiveGallery from '@/components/LiveGallery';
 import { eventBySlug } from '@/lib/events';
 import { galleryFor } from '@/lib/gallery';
+import { publicBaseUrl } from '@/lib/publicUrl';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,10 +20,7 @@ export default async function GalleryPage({
   const event = eventBySlug(slug);
   if (!event || !event.gallery) notFound();
 
-  const headerList = await headers();
-  const base =
-    process.env.PUBLIC_BASE_URL?.replace(/\/$/, '') ??
-    `${headerList.get('x-forwarded-proto') ?? 'http'}://${headerList.get('host') ?? 'localhost:4300'}`;
+  const base = await publicBaseUrl();
   const galleryUrl = `${base}/g/${event.slug}`;
   const qrDataUrl = await QRCode.toDataURL(galleryUrl, { margin: 1, width: 360, color: { dark: '#181816', light: '#ffffff' } });
 

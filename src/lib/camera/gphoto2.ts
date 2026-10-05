@@ -1,12 +1,14 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { UPLOAD_DIR } from '@/lib/db';
+import { guardRails } from './exposure';
+import { FocusLockError, isFocusLocked, saveFocusLock } from './focusLock';
 import { createJpegSplitter, multipartPart } from './mjpeg';
 import type {
+  AutoSetupStep,
   CameraChoices,
   CameraInfo,
   CameraSettings,
@@ -14,6 +16,7 @@ import type {
   CameraStatus,
   CaptureOptions,
   CaptureResult,
+  LiveViewOptions,
   SettingName,
 } from './types';
 
@@ -23,10 +26,11 @@ const BIN = process.env.GPHOTO2_BIN ?? 'gphoto2';
 const GPHOTO_ENV = { ...process.env, LANG: 'C', LC_ALL: 'C' };
 
 /**
- * The body streams live view as fast as USB allows (about 60 fps of 480x320 on an M50, over
- * 5 MB/s). A viewfinder needs far less, and a tablet on venue Wi-Fi cannot take that much.
+ * The body streams live view as fast as USB allows: about 33 fps of 480x320 on an M50, each
+ * frame around 80 KB (some 20 Mbit/s). A screen on this machine or the venue LAN takes it all;
+ * a tunnel gets fewer (see the route).
  */
-const LIVE_FPS = 24;
+const LIVE_FPS = 30;
 /** A guest moving from Hias to Foto, or a reload, reconnects within this; then live view stops. */
 const LIVE_IDLE_MS = 15_000;
 /** How soon live view is retried after the body drops it (asleep, cable knocked). */
@@ -42,6 +46,8 @@ const CAPTURE_TIMEOUT_MS = 20_000;
  * refuse to fire: a guest in dim light is better slightly soft than not photographed at all.
  */
 const FOCUS_WINDOW_MS = 700;
+/** Time the one focus of a focus lock gets: longer than a shot's, nobody is waiting on it. */
+const FOCUS_ONCE_MS = 1500;
 /** gphoto2 can sit for 90 s after reporting a refusal; once it has said so, it is killed. */
 const KILL_AFTER_ERROR_MS = 500;
 /** How long live view gets to shut the camera's viewfinder down cleanly before it is killed. */
@@ -68,6 +74,28 @@ interface Target {
   model: string;
   port: string;
 }
+
+/** One `--get-config` answer: whether it can be set, its value, and the values it takes. */
+interface ConfigField {
+  readonly: boolean;
+  current: string | null;
+  choices: string[];
+}
+
+function parseConfig(block: string): ConfigField {
+  const lines = block.split('\n').map((l) => l.trim());
+  return {
+    readonly: lines.some((l) => /^Readonly:\s*1/.test(l)),
+    current: lines.find((l) => l.startsWith('Current:'))?.replace('Current:', '').trim() ?? null,
+    choices: lines
+      .filter((l) => l.startsWith('Choice:'))
+      .map((l) => l.replace(/^Choice:\s*\d+\s*/, '').trim())
+      .filter((v) => v.length > 0 && v !== 'Unknown value'),
+  };
+}
+
+const isJpegOnly = (v: string | null) => !!v && /jpe?g/i.test(v) && !/raw/i.test(v);
+const neverSleeps = (v: string | null) => !!v && (/^0+$/.test(v.trim()) || /disable|never|off/i.test(v));
 
 /**
  * The lines gphoto2 prints under "*** Error ***", without its debugging boilerplate. It
@@ -123,6 +151,56 @@ function killGroup(child: ChildProcess) {
   }
 }
 
+const isClaimError = (error: unknown) => /could not claim/i.test(error instanceof Error ? error.message : String(error));
+
+/**
+ * macOS starts ptpcamerad whenever a camera is plugged in or wakes, and it takes the camera
+ * gphoto2 needs. It runs as the logged-in user, so the booth can stop it without sudo; launchd
+ * brings it back later, harmlessly. True when one was stopped.
+ */
+async function freeFromMacos(): Promise<boolean> {
+  if (process.platform !== 'darwin') return false;
+  try {
+    await run('/usr/bin/pkill', ['-9', '-x', 'ptpcamerad'], { timeout: 3000 });
+    return true;
+  } catch {
+    return false; // none running (pkill exits 1)
+  }
+}
+
+/**
+ * Everything live view holds open, let go when the server is asked to stop. An open viewfinder
+ * stream keeps the server's graceful shutdown waiting forever, and its gphoto2 child, left
+ * running, holds the camera: the next server then finds it taken.
+ */
+const liveChildren = new Set<ChildProcess>();
+const liveStreams = new Set<() => void>();
+let shutdownHooked = false;
+
+function releaseLive() {
+  for (const close of [...liveStreams]) close();
+  for (const child of liveChildren) child.kill('SIGINT');
+}
+
+function hookShutdown() {
+  if (shutdownHooked) return;
+  shutdownHooked = true;
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.once(signal, () => {
+      releaseLive();
+      // Next.js exits once its connections close; should anything else hold it, it still goes.
+      setTimeout(() => process.exit(0), 3000).unref();
+    });
+  }
+  process.once('exit', releaseLive);
+}
+
+function trackLive(child: ChildProcess) {
+  hookShutdown();
+  liveChildren.add(child);
+  child.once('exit', () => liveChildren.delete(child));
+}
+
 function pickCamera(rows: Target[]): Target | null {
   const wanted = process.env.GPHOTO2_CAMERA?.toLowerCase();
   if (wanted) return rows.find((r) => r.model.toLowerCase().includes(wanted)) ?? null;
@@ -148,7 +226,17 @@ export class Gphoto2Camera implements CameraSource {
     return this.target ? ['--port', this.target.port] : [];
   }
 
+  /** One gphoto2 run; when macOS has taken the camera, it is made to let go and the run retried. */
   private async gphoto(args: string[], timeout = 20_000): Promise<string> {
+    try {
+      return await this.gphotoOnce(args, timeout);
+    } catch (error) {
+      if (isClaimError(error) && (await freeFromMacos())) return this.gphotoOnce(args, timeout);
+      throw error;
+    }
+  }
+
+  private async gphotoOnce(args: string[], timeout: number): Promise<string> {
     let stdout: string;
     let stderr: string;
     try {
@@ -183,10 +271,10 @@ export class Gphoto2Camera implements CameraSource {
     return this.lock.run(async () => {
       // Live view holds the camera by design: probing now would fail and report the booth
       // broken to the guest who is looking at a working viewfinder.
-      if (this.liveProcess) return this.lastInfo ?? this.busyInfo();
+      if (this.liveProcess) return { ...(this.lastInfo ?? this.busyInfo()), focusLocked: isFocusLocked() };
       const info = await this.probe();
       if (info.ready) this.lastInfo = info;
-      return info;
+      return { ...info, focusLocked: isFocusLocked() };
     });
   }
 
@@ -290,13 +378,9 @@ export class Gphoto2Camera implements CameraSource {
     const settings: CameraSettings = { iso: null, aperture: null, shutterspeed: null };
     const choices: CameraChoices = { iso: [], aperture: [], shutterspeed: [] };
     SETTING_NAMES.forEach((name, i) => {
-      const lines = (blocks[i] ?? '').split('\n').map((l) => l.trim());
-      settings[name] = lines.find((l) => l.startsWith('Current:'))?.replace('Current:', '').trim() ?? null;
-      choices[name] = lines
-        .filter((l) => l.startsWith('Choice:'))
-        // "Choice: 3 400" -> "400"
-        .map((l) => l.replace(/^Choice:\s*\d+\s*/, '').trim())
-        .filter((v) => v.length > 0 && v !== 'Unknown value');
+      const field = parseConfig(blocks[i] ?? '');
+      settings[name] = field.current;
+      choices[name] = field.choices;
     });
     return { settings, choices };
   }
@@ -363,8 +447,124 @@ export class Gphoto2Camera implements CameraSource {
     });
   }
 
+  /**
+   * Puts the body where a booth needs it, as far as USB allows: JPEG only (RAW would hand over
+   * the wrong file), one frame per press, one-shot focus (manual focus is left alone: an
+   * operator chose it), never sleeping, 3:2, and shutter and aperture inside a booth's range.
+   * The mode dial is physical, so it is only reported. Each step says what it found and did.
+   */
+  async autoSetup(): Promise<AutoSetupStep[]> {
+    return this.lock.run(async () => {
+      await this.stopLiveProcess();
+      try {
+        if (!(await this.detect())) throw new Error(describe(new Error('no camera')));
+        const steps: AutoSetupStep[] = [];
+        const read = (name: string) => this.gphoto(['--get-config', name], 8000).then(parseConfig, () => null);
+
+        /** Reads a setting, sets it to what `pick` wants when that differs, and records the outcome. */
+        const tune = async (key: string, label: string, name: string, pick: (f: ConfigField) => string | null, manual: string) => {
+          const field = await read(name);
+          if (!field) return void steps.push({ key, label, before: null, after: null, result: 'missing' });
+          const want = pick(field);
+          if (!want || want === field.current) return void steps.push({ key, label, before: field.current, after: field.current, result: 'ok' });
+          if (field.readonly) return void steps.push({ key, label, before: field.current, after: field.current, result: 'manual', note: manual });
+          try {
+            await this.gphoto(['--set-config', `${name}=${want}`], 10_000);
+            const after = (await read(name))?.current ?? null;
+            steps.push({ key, label, before: field.current, after, result: after === want ? 'changed' : 'manual', note: after === want ? undefined : manual });
+          } catch {
+            steps.push({ key, label, before: field.current, after: field.current, result: 'manual', note: manual });
+          }
+        };
+
+        await tune(
+          'format',
+          'Format foto',
+          'imageformat',
+          (f) =>
+            isJpegOnly(f.current)
+              ? f.current
+              : (f.choices.find((c) => /^medium fine jpeg$/i.test(c)) ??
+                f.choices.find((c) => isJpegOnly(c) && /fine/i.test(c)) ??
+                f.choices.find(isJpegOnly) ??
+                null),
+          'Menu kamera: Kualitas gambar → JPEG saja (tanpa RAW).',
+        );
+        await tune(
+          'drive',
+          'Mode drive',
+          'drivemode',
+          (f) => (/single/i.test(f.current ?? '') ? f.current : (f.choices.find((c) => /^single/i.test(c)) ?? null)),
+          'Menu kamera: Mode drive → Satu foto.',
+        );
+        if (isFocusLocked()) {
+          steps.push({ key: 'focus', label: 'Fokus', before: 'terkunci', after: 'terkunci', result: 'ok' });
+        } else await tune(
+          'focus',
+          'Mode fokus',
+          'focusmode',
+          (f) =>
+            /one ?shot|manual|mf/i.test(f.current ?? '') ? f.current : (f.choices.find((c) => /one ?shot/i.test(c)) ?? null),
+          'Menu kamera: Operasi AF → One Shot.',
+        );
+        await tune(
+          'sleep',
+          'Mati otomatis',
+          'autopoweroff',
+          (f) => (neverSleeps(f.current) ? f.current : (f.choices.find((c) => neverSleeps(c)) ?? (f.choices.length === 0 ? '0' : null))),
+          'Menu kamera: Hemat daya → Mati otomatis → Nonaktif.',
+        );
+        await tune(
+          'aspect',
+          'Rasio foto',
+          'aspectratio',
+          (f) => (f.current === '3:2' || !f.choices.includes('3:2') ? f.current : '3:2'),
+          'Menu kamera: Rasio foto → 3:2 (bidang gambar paling luas).',
+        );
+
+        const mode = (await read('autoexposuremodedial'))?.current ?? null;
+        const manualMode = /^manual$/i.test(mode ?? '');
+        steps.push({
+          key: 'mode',
+          label: 'Kenop mode',
+          before: mode,
+          after: mode,
+          result: manualMode ? 'ok' : 'manual',
+          note: manualMode ? undefined : 'Putar kenop mode kamera ke M, supaya terang foto sama untuk semua tamu.',
+        });
+
+        const { settings, choices } = await this.readConfigs();
+        const rails = guardRails(settings, choices, mode);
+        for (const [name, label] of [
+          ['shutterspeed', 'Kecepatan rana'],
+          ['aperture', 'Bukaan'],
+        ] as const) {
+          const want = rails[name];
+          if (!want) {
+            steps.push({ key: name, label, before: settings[name], after: settings[name], result: settings[name] ? 'ok' : 'missing' });
+            continue;
+          }
+          try {
+            await this.gphoto(['--set-config', `${name}=${want}`], 10_000);
+            steps.push({ key: name, label, before: settings[name], after: want, result: 'changed' });
+          } catch {
+            steps.push({ key: name, label, before: settings[name], after: settings[name], result: 'failed' });
+          }
+        }
+
+        // Everything cached about the body (aspect, settings) is stale now.
+        this.lastInfo = null;
+        return steps;
+      } finally {
+        if (this.listeners.size > 0) await this.startLive();
+      }
+    });
+  }
+
   async capture(sessionId: string, index: number, onFired?: () => void, options: CaptureOptions = {}): Promise<CaptureResult> {
     return this.lock.run(async () => {
+      // The focus test is a plain capture that autofocuses: it would move a locked focus.
+      if (options.requireFocus && isFocusLocked()) throw new FocusLockError('Fokus sedang dikunci; uji autofokus dilewati.');
       await this.stopLiveProcess();
       if (!this.target && !(await this.detect())) throw new Error(describe(new Error('no camera')));
 
@@ -379,11 +579,13 @@ export class Gphoto2Camera implements CameraSource {
         try {
           await fire();
         } catch (first) {
-          // A refused autofocus is the commonest miss at an event and usually succeeds on a
-          // second attempt once the lens has settled. Anything else fails straight through, and
-          // the focus test reports the first refusal as it is.
-          if (options.requireFocus || !/focus/i.test(first instanceof Error ? first.message : String(first))) throw first;
-          await new Promise((r) => setTimeout(r, 600));
+          // macOS took the camera: make it let go and shoot again at once. A refused autofocus
+          // is the commonest miss at an event and usually succeeds on a second attempt once the
+          // lens has settled. Anything else fails straight through, and the focus test reports
+          // the first refusal as it is.
+          const freed = isClaimError(first) && (await freeFromMacos());
+          if (!freed && (options.requireFocus || !/focus/i.test(first instanceof Error ? first.message : String(first)))) throw first;
+          await new Promise((r) => setTimeout(r, freed ? 100 : 600));
           await fire();
         }
       } catch (error) {
@@ -398,6 +600,40 @@ export class Gphoto2Camera implements CameraSource {
       const stat = await fs.stat(target).catch(() => null);
       if (!stat) throw new Error('The camera fired but did not hand over the photo. Try again.');
       return { file: relative, bytes: stat.size };
+    });
+  }
+
+  async setFocusLock(locked: boolean): Promise<void> {
+    return this.lock.run(async () => {
+      await this.stopLiveProcess();
+      try {
+        if (!this.target && !(await this.detect())) throw new Error(describe(new Error('no camera')));
+        if (!(await this.supportsEosRelease())) {
+          throw new FocusLockError('Kamera ini tidak bisa mengunci fokus lewat USB. Set lensa ke MF di kamera.');
+        }
+        try {
+          // The body's own Continuous AF would move the lens between shots. It goes back on with
+          // the lock lifted. Bodies without the setting skip it.
+          await this.gphoto(['--set-config', `continuousaf=${locked ? 'Off' : 'On'}`], 10_000);
+        } catch {
+          // Not every body has it.
+        }
+        if (locked) {
+          // One half-press at whoever stands at the guests' spot; the AF-assist lamp may light
+          // this once. Released, the lens stays where it focused.
+          await this.gphoto(
+            ['--set-config', 'eosremoterelease=Press Half AF', `--wait-event=${FOCUS_ONCE_MS}ms`, '--set-config', 'eosremoterelease=Release'],
+            15_000,
+          );
+        }
+        saveFocusLock(locked);
+      } catch (error) {
+        if (error instanceof FocusLockError) throw error;
+        this.target = null;
+        throw new Error(describe(error));
+      } finally {
+        if (this.listeners.size > 0) await this.startLive();
+      }
     });
   }
 
@@ -418,12 +654,10 @@ export class Gphoto2Camera implements CameraSource {
 
   /** Canon EOS bodies expose `eosremoterelease`; others are driven by plain capture. */
   private async supportsEosRelease(): Promise<boolean> {
-    if (this.eosRelease === null) {
-      this.eosRelease = await this.gphoto(['--get-config', 'eosremoterelease'], 8000).then(
-        (out) => out.includes('Press Full MF'),
-        () => false,
-      );
-    }
+    // Only an answer is remembered. A body that cannot be asked right now (held by macOS,
+    // asleep) throws, and is asked again next time instead of being fired the wrong way until
+    // it is replugged.
+    this.eosRelease ??= (await this.gphoto(['--get-config', 'eosremoterelease'], 8000)).includes('Press Full MF');
     return this.eosRelease;
   }
 
@@ -438,12 +672,16 @@ export class Gphoto2Camera implements CameraSource {
   private async shoot(target: string, onFired?: () => void, requireFocus = false): Promise<void> {
     // The focus test uses plain capture on purpose: it is the one that refuses without focus.
     const eos = !requireFocus && (await this.supportsEosRelease());
+    // A locked focus is kept by never pressing halfway: no autofocus, no AF-assist lamp.
+    const focus = eos && !isFocusLocked() ? ['--set-config', 'eosremoterelease=Press Half AF', `--wait-event=${FOCUS_WINDOW_MS}ms`] : [];
     const args = eos
       ? [
-          '--set-config', 'eosremoterelease=Press Half AF',
-          `--wait-event=${FOCUS_WINDOW_MS}ms`,
+          ...focus,
           '--set-config', 'eosremoterelease=Press Full MF',
-          '--set-config', 'eosremoterelease=Release Full',
+          // "Press Full MF" presses half and full in one go; "Release Full" lets go of the full
+          // press only, and the half-press it left held kept the body focusing, AF-assist lamp
+          // lit, after every shot. "Release" lets go of both (libgphoto2 2.5.34).
+          '--set-config', 'eosremoterelease=Release',
           '--wait-event-and-download=FILEADDED',
           '--filename', target, '--force-overwrite',
         ]
@@ -501,6 +739,7 @@ export class Gphoto2Camera implements CameraSource {
   private startLiveProcess() {
     if (this.liveProcess) return;
     const child = spawn(BIN, [...this.portArgs(), '--capture-movie', '--stdout'], { stdio: ['ignore', 'pipe', 'ignore'], env: GPHOTO_ENV });
+    trackLive(child);
     const splitter = createJpegSplitter();
     child.stdout!.on('data', (chunk: Buffer<ArrayBuffer>) => {
       for (const frame of splitter.push(chunk)) for (const listener of this.listeners) listener(frame);
@@ -541,7 +780,12 @@ export class Gphoto2Camera implements CameraSource {
     if (this.retryTimer) return;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
-      if (this.listeners.size > 0) void this.lock.run(() => this.startLive());
+      if (this.listeners.size === 0) return;
+      // A live view that keeps dropping is usually macOS holding the camera.
+      void this.lock.run(async () => {
+        await freeFromMacos();
+        await this.startLive();
+      });
     }, LIVE_RETRY_MS);
   }
 
@@ -554,8 +798,9 @@ export class Gphoto2Camera implements CameraSource {
     }, LIVE_IDLE_MS);
   }
 
-  async liveView(signal: AbortSignal): Promise<ReadableStream<Uint8Array> | null> {
+  async liveView(signal: AbortSignal, options: LiveViewOptions = {}): Promise<ReadableStream<Uint8Array> | null> {
     if (signal.aborted) return null;
+    const fps = Math.min(options.fps ?? LIVE_FPS, LIVE_FPS);
     let listener: FrameListener | null = null;
 
     const detach = () => {
@@ -565,15 +810,22 @@ export class Gphoto2Camera implements CameraSource {
       if (this.listeners.size === 0) this.scheduleIdleStop();
     };
 
+    let close = detach;
     const stream = new ReadableStream<Uint8Array>({
       start: (controller) => {
-        let lastSent = 0;
+        // Frames earn credit at the target rate and each one sent spends one. A plain "at least
+        // 1/fps apart" gate would halve a body that runs a little faster than the target (33
+        // fps capped at 24 came out as 16).
+        let credit = 1;
+        let last = Date.now();
         listener = (frame) => {
           const now = Date.now();
-          // Cap the rate, and drop frames a slow client has not taken yet, so the screen
-          // always shows the newest frame instead of falling seconds behind.
-          if (now - lastSent < 1000 / LIVE_FPS || (controller.desiredSize ?? 1) <= 0) return;
-          lastSent = now;
+          credit = Math.min(credit + ((now - last) * fps) / 1000, 2);
+          last = now;
+          // Drop frames a slow client has not taken yet, so the screen always shows the
+          // newest frame instead of falling seconds behind.
+          if (credit < 1 || (controller.desiredSize ?? 1) <= 0) return;
+          credit -= 1;
           try {
             controller.enqueue(new Uint8Array(multipartPart(frame)));
           } catch {
@@ -581,24 +833,28 @@ export class Gphoto2Camera implements CameraSource {
           }
         };
         this.listeners.add(listener);
+        close = () => {
+          liveStreams.delete(close);
+          detach();
+          try {
+            controller.close();
+          } catch {
+            // Already closed.
+          }
+        };
+        liveStreams.add(close);
+        hookShutdown();
         if (this.idleTimer) {
           clearTimeout(this.idleTimer);
           this.idleTimer = null;
         }
         signal.addEventListener(
           'abort',
-          () => {
-            detach();
-            try {
-              controller.close();
-            } catch {
-              // Already closed.
-            }
-          },
+          close,
           { once: true },
         );
       },
-      cancel: detach,
+      cancel: () => close(),
     });
 
     await this.lock.run(() => this.startLive());

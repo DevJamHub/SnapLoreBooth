@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { getSession, listPhotos, updateSession } from '@/lib/db';
+import { getConfig } from '@/lib/config';
+import { discardSession, getSession, listPhotos, updateSession } from '@/lib/db';
 import { frameById } from '@/lib/frames';
-import { FILTERS, TEMPLATES } from '@/lib/packages';
+import { BEAUTY, FILTERS, TEMPLATES } from '@/lib/packages';
 import type { SessionStatus } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -36,16 +37,30 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
     patch.status = body.status as SessionStatus;
   }
+  const { style } = getConfig();
   if (body.filter !== undefined) {
     if (!FILTERS.some((f) => f.id === body.filter)) return NextResponse.json({ error: 'unknown filter' }, { status: 400 });
+    if (!style.filters.includes(String(body.filter))) return NextResponse.json({ error: 'filter is switched off' }, { status: 400 });
     patch.filter = String(body.filter);
   }
   if (body.template !== undefined) {
     const templateId = String(body.template);
     // A built-in frame fits every package; an uploaded one only the package it was drawn for.
-    const known = TEMPLATES.some((t) => t.id === templateId) || frameById(templateId)?.format === session.format;
+    const frame = frameById(templateId);
+    const known = TEMPLATES.some((t) => t.id === templateId) || (frame?.format === session.format && !frame.hidden);
     if (!known) return NextResponse.json({ error: 'unknown template' }, { status: 400 });
     patch.template = templateId;
+  }
+  if (body.beauty !== undefined) {
+    if (!BEAUTY.some((b) => b.id === body.beauty)) return NextResponse.json({ error: 'unknown beauty level' }, { status: 400 });
+    if (!style.beauty && body.beauty !== 'off') return NextResponse.json({ error: 'beauty is switched off' }, { status: 400 });
+    patch.beauty = String(body.beauty);
+  }
+  if (body.mirror !== undefined) {
+    if (typeof body.mirror !== 'boolean') return NextResponse.json({ error: 'mirror must be a boolean' }, { status: 400 });
+    // The printed sheet is final; flipping now would make the QR page disagree with the paper.
+    if (session.strip_file) return NextResponse.json({ error: 'sheet already made' }, { status: 409 });
+    patch.mirror = body.mirror;
   }
   if (body.in_gallery !== undefined) {
     if (typeof body.in_gallery !== 'boolean') return NextResponse.json({ error: 'in_gallery must be a boolean' }, { status: 400 });
@@ -55,4 +70,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   const updated = updateSession(id, patch);
   return NextResponse.json({ session: updated ? { ...updated, delivered_to: null } : null });
+}
+
+/** The guest went back to change package before paying or shooting; an empty session goes. */
+export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  if (!getSession(id)) return NextResponse.json({ error: 'session not found' }, { status: 404 });
+  if (!discardSession(id)) return NextResponse.json({ error: 'session has photos or a payment; it stays' }, { status: 409 });
+  return NextResponse.json({ discarded: id });
 }

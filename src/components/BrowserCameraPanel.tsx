@@ -1,15 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { CAMERA_DEVICE_KEY } from '@/components/CaptureStage';
-
-function read(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
+import { CAMERA_DEVICE_KEY, readDeviceSetting } from '@/components/guest/deviceKeys';
 
 function write(key: string, value: string) {
   try {
@@ -31,7 +23,7 @@ export default function BrowserCameraPanel({ mirror }: { mirror: boolean }) {
   const [problem, setProblem] = useState<string | null>(null);
 
   useEffect(() => {
-    setDeviceId(read(CAMERA_DEVICE_KEY) ?? '');
+    setDeviceId(readDeviceSetting(CAMERA_DEVICE_KEY) ?? '');
   }, []);
 
   useEffect(() => {

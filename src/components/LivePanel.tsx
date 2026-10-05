@@ -2,11 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import LoopVideo from '@/components/LoopVideo';
+import { mediaUrl } from '@/lib/format';
 
 const POLL_MS = 3000;
 const GIVE_UP_MS = 2 * 60_000;
-
-const mediaUrl = (file: string) => `/api/media/${file.split('/').map(encodeURIComponent).join('/')}`;
 
 /**
  * The live sheet on the guest's phone. A guest often scans the QR while the booth is still

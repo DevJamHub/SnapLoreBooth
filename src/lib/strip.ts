@@ -1,4 +1,5 @@
-import { FILTERS, TEMPLATES, filterCss, type FilterOp } from './packages';
+import { applyBeauty } from './beauty';
+import { FILTERS, TEMPLATES, beautyLevel, filterCss, type BeautyLevel, type FilterOp } from './packages';
 import type { CustomFrame } from './types';
 
 export interface StripOptions {
@@ -11,6 +12,10 @@ export interface StripOptions {
   frame?: CustomFrame | null;
   /** Flip every photo left to right, as the guest saw them in a mirrored preview. */
   mirror?: boolean;
+  /** Skin smoothing; see BEAUTY in packages.ts. Stand-in photos are never smoothed. */
+  beauty?: string;
+  /** Built-in frames print the date under the event name unless this is false. */
+  showDate?: boolean;
 }
 
 export interface Rect {
@@ -94,6 +99,28 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+/**
+ * Photos already loaded, by source. Gaya recomposes the sheet on every tap and the capture
+ * screen after every shot; each would otherwise fetch and decode every photo again. A retake
+ * gets a new source, so a stale photo is never drawn. Failed loads are not kept.
+ */
+const loaded = new Map<string, Promise<HTMLImageElement>>();
+const LOADED_KEPT = 12;
+
+function cachedImage(src: string): Promise<HTMLImageElement> {
+  let image = loaded.get(src);
+  if (image) {
+    // Most recently used goes last, so the oldest is the one let go.
+    loaded.delete(src);
+  } else {
+    image = loadImage(src);
+    image.catch(() => loaded.get(src) === image && loaded.delete(src));
+  }
+  loaded.set(src, image);
+  if (loaded.size > LOADED_KEPT) loaded.delete(loaded.keys().next().value!);
+  return image;
+}
+
 const PLACEHOLDER_TONES = [
   ['#d08a6a', '#5b3f33'],
   ['#e5b07f', '#7a5a46'],
@@ -126,7 +153,7 @@ export function placeholderCanvas(index: number, width = 600, height = 600): HTM
   return canvas;
 }
 
-type Drawable = HTMLImageElement | HTMLCanvasElement | HTMLVideoElement;
+export type Drawable = HTMLImageElement | HTMLCanvasElement | HTMLVideoElement;
 
 function sizeOf(src: Drawable): { width: number; height: number } {
   return src instanceof HTMLVideoElement ? { width: src.videoWidth, height: src.videoHeight } : { width: src.width, height: src.height };
@@ -190,6 +217,55 @@ function applyOps(data: Uint8ClampedArray, ops: FilterOp[]) {
   }
 }
 
+/**
+ * Smoothed photos, cut to their slot. The Gaya screen recomposes the sheet on every tap and
+ * the look changes far more often than the smoothing, so the smoothing is done once.
+ */
+const smoothed = new Map<string, HTMLCanvasElement>();
+const SMOOTHED_KEPT = 16;
+
+/**
+ * One photo cut to its slot, with what the canvas cannot do itself applied to its own pixels:
+ * the smoothing, and the look on browsers without canvas filters. Done on the cut photo, so a
+ * tilted slot never touches a neighbour it overlaps.
+ */
+function slotPicture(img: Drawable, src: string | null, slot: Rect, beauty: BeautyLevel | null, ops: FilterOp[] | null): HTMLCanvasElement {
+  const w = Math.round(slot.w);
+  const h = Math.round(slot.h);
+  const key = beauty && src ? `${beauty.id}|${w}x${h}|${src}` : null;
+  let base = key ? smoothed.get(key) : undefined;
+  if (!base) {
+    base = document.createElement('canvas');
+    base.width = w;
+    base.height = h;
+    const ctx = base.getContext('2d', { willReadFrequently: true })!;
+    drawCover(ctx, img, 0, 0, w, h);
+    if (beauty) {
+      const pixels = ctx.getImageData(0, 0, w, h);
+      applyBeauty(pixels, beauty);
+      ctx.putImageData(pixels, 0, 0);
+    }
+    if (key) {
+      smoothed.set(key, base);
+      if (smoothed.size > SMOOTHED_KEPT) smoothed.delete(smoothed.keys().next().value!);
+    }
+  }
+  if (!ops) return base;
+
+  // The cached cut stays untouched; the look goes on a copy.
+  const out = key ? document.createElement('canvas') : base;
+  if (out !== base) {
+    out.width = w;
+    out.height = h;
+    out.getContext('2d')!.drawImage(base, 0, 0);
+  }
+  const ctx = out.getContext('2d', { willReadFrequently: true })!;
+  const pixels = ctx.getImageData(0, 0, w, h);
+  applyOps(pixels.data, ops);
+  ctx.putImageData(pixels, 0, 0);
+  return out;
+}
+
 /** The uploaded frame these options select, if any. */
 function frameOf(options: StripOptions): CustomFrame | null {
   const { frame } = options;
@@ -240,7 +316,7 @@ function drawBoardBase(ctx: CanvasRenderingContext2D, layout: BoardLayout, optio
       cursor += Math.round(layout.width * 0.08);
     }
 
-    if (template.date) {
+    if (template.date && options.showDate !== false) {
       ctx.fillStyle = template.muted;
       ctx.font = `400 ${Math.round(layout.width * 0.026)}px ui-monospace, monospace`;
       const stamp = options.capturedAt.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -256,8 +332,8 @@ function drawBoardBase(ctx: CanvasRenderingContext2D, layout: BoardLayout, optio
 export async function composeStrip(sources: (string | null)[], options: StripOptions, quality = 0.92): Promise<string> {
   const frame = frameOf(options);
   const [images, overlay] = await Promise.all([
-    Promise.all(sources.map((src, i): Promise<Drawable> => (src ? loadImage(src) : Promise.resolve(placeholderCanvas(i))))),
-    frame ? loadImage(frame.src) : Promise.resolve(null),
+    Promise.all(sources.map((src, i): Promise<Drawable> => (src ? cachedImage(src) : Promise.resolve(placeholderCanvas(i))))),
+    frame ? cachedImage(frame.src) : Promise.resolve(null),
   ]);
   const ops = FILTERS.find((f) => f.id === options.filterId)?.ops ?? [];
   const layout = boardLayout(options.format, options.templateId, images.length, frame);
@@ -271,25 +347,15 @@ export async function composeStrip(sources: (string | null)[], options: StripOpt
   drawBoardBase(ctx, layout, options);
 
   const nativeFilter = ops.length > 0 && supportsCanvasFilter();
+  const beauty = beautyLevel(options.beauty);
 
   layout.slots.forEach((slot, i) => {
     const img = images[i];
     if (!img) return;
-    let picture: Drawable = img;
-
-    // Without canvas filters the look is applied to the cropped photo's own pixels first,
-    // so a tilted slot never re-filters a neighbour it overlaps.
-    if (ops.length > 0 && !nativeFilter) {
-      const crop = document.createElement('canvas');
-      crop.width = Math.round(slot.w);
-      crop.height = Math.round(slot.h);
-      const cropCtx = crop.getContext('2d')!;
-      drawCover(cropCtx, img, 0, 0, crop.width, crop.height);
-      const pixels = cropCtx.getImageData(0, 0, crop.width, crop.height);
-      applyOps(pixels.data, ops);
-      cropCtx.putImageData(pixels, 0, 0);
-      picture = crop;
-    }
+    const src = sources[i] ?? null;
+    const slotBeauty = src ? beauty : null;
+    const pixelOps = ops.length > 0 && !nativeFilter ? ops : null;
+    const picture: Drawable = slotBeauty || pixelOps ? slotPicture(img, src, slot, slotBeauty, pixelOps) : img;
 
     enterSlot(ctx, slot, options.mirror);
     if (nativeFilter) ctx.filter = filterCss(options.filterId);
@@ -302,14 +368,51 @@ export async function composeStrip(sources: (string | null)[], options: StripOpt
   return canvas.toDataURL('image/jpeg', quality);
 }
 
+export interface LiveBoard {
+  width: number;
+  height: number;
+  /** Draws the sheet with `source` in every hole (stand-ins while it has no picture yet). */
+  draw(ctx: CanvasRenderingContext2D, source: Drawable | null): void;
+}
+
+/**
+ * The chosen frame as a live picture, for showing guests themselves in it before they shoot:
+ * the frame is loaded and its base drawn once, then each call only paints the holes.
+ */
+export async function liveBoard(options: StripOptions, shots: number): Promise<LiveBoard> {
+  const frame = frameOf(options);
+  const layout = boardLayout(options.format, options.templateId, shots, frame);
+  const base = document.createElement('canvas');
+  base.width = layout.width;
+  base.height = layout.height;
+  drawBoardBase(base.getContext('2d')!, layout, options);
+  const overlay = frame ? await cachedImage(frame.src) : null;
+  const standIns = layout.slots.map((slot, i) => placeholderCanvas(i, Math.round(slot.w / 2), Math.round(slot.h / 2)));
+
+  return {
+    width: layout.width,
+    height: layout.height,
+    draw(ctx, source) {
+      const live = source && sizeOf(source).width > 0 ? source : null;
+      ctx.drawImage(base, 0, 0);
+      layout.slots.forEach((slot, i) => {
+        enterSlot(ctx, slot, live ? options.mirror : false);
+        drawCover(ctx, live ?? standIns[i], 0, 0, slot.w, slot.h);
+        ctx.restore();
+      });
+      if (overlay) ctx.drawImage(overlay, 0, 0, layout.width, layout.height);
+    },
+  };
+}
+
 export interface LiveSlot {
   /** The shot's countdown clip; null when it never uploaded, and the still stands in. */
   clip: string | null;
   still: string;
 }
 
-/** Recorders differ: Safari writes MP4, Chrome MP4 or WebM. */
-function liveMimeType(): string | null {
+/** Recorders differ: Safari writes MP4, Chrome MP4 or WebM. Null when this browser cannot record. */
+export function recorderMimeType(): string | null {
   if (typeof MediaRecorder === 'undefined') return null;
   return ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'].find((t) => MediaRecorder.isTypeSupported?.(t)) ?? null;
 }
@@ -344,8 +447,8 @@ const LIVE_FALLBACK_SECONDS = 3.2;
  * recorded from a canvas into one short video. Takes as long as the clips play (~3s).
  * Returns null when the browser cannot record or there are no clips.
  */
-export async function composeLive(slots: LiveSlot[], options: StripOptions, scale = 2 / 3): Promise<Blob | null> {
-  const mimeType = liveMimeType();
+export async function composeLive(slots: LiveSlot[], options: StripOptions, scale = 2 / 3, bitrate = 3_000_000): Promise<Blob | null> {
+  const mimeType = recorderMimeType();
   if (!mimeType || !slots.some((s) => s.clip)) return null;
 
   const frame = frameOf(options);
@@ -372,7 +475,7 @@ export async function composeLive(slots: LiveSlot[], options: StripOptions, scal
       Promise.all(
         slots.map((slot): Promise<Drawable> => (slot.clip ? loadClip(slot.clip, holder).catch(() => loadImage(slot.still)) : loadImage(slot.still))),
       ),
-      frame ? loadImage(frame.src) : Promise.resolve(null),
+      frame ? cachedImage(frame.src) : Promise.resolve(null),
     ]);
     const videos = media.filter((m): m is HTMLVideoElement => m instanceof HTMLVideoElement);
     if (videos.length === 0) return null;
@@ -384,7 +487,7 @@ export async function composeLive(slots: LiveSlot[], options: StripOptions, scal
     videos.forEach((v) => (v.currentTime = 0));
     await Promise.all(videos.map((v) => v.play().catch(() => undefined)));
 
-    const recorder = new MediaRecorder(canvas.captureStream(30), { mimeType, videoBitsPerSecond: 5_000_000 });
+    const recorder = new MediaRecorder(canvas.captureStream(30), { mimeType, videoBitsPerSecond: bitrate });
     const chunks: Blob[] = [];
     recorder.ondataavailable = (e) => e.data.size > 0 && chunks.push(e.data);
     const stopped = new Promise<void>((resolve) => (recorder.onstop = () => resolve()));
@@ -419,6 +522,13 @@ export async function composeLive(slots: LiveSlot[], options: StripOptions, scal
     videos.forEach((v) => v.pause());
     return chunks.length ? new Blob(chunks, { type: mimeType.split(';')[0] }) : null;
   } finally {
+    // iOS decodes only a few videos at once and holds on to one until its source is cleared,
+    // so a booth that made many live sheets would otherwise stop playing video.
+    for (const video of holder.querySelectorAll('video')) {
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    }
     holder.remove();
   }
 }

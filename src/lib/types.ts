@@ -24,10 +24,13 @@ export interface Session {
   in_gallery: boolean;
   /**
    * Photos and clips are stored as the sensor saw them; when true, every place they are shown
-   * or composed flips them, so the guest's mirrored preview and the result match. Taken from
-   * the event when the session starts, so a sheet never mixes the two.
+   * or composed flips them, so the guest's mirrored preview and the result match. Starts from
+   * the event's default; the guest can switch it during the photo session. One value for the
+   * whole sheet, so a sheet never mixes the two.
    */
   mirror: boolean;
+  /** Skin smoothing chosen on the Gaya screen; see BEAUTY in packages.ts. */
+  beauty: string;
 }
 
 export interface Photo {
@@ -45,6 +48,10 @@ export interface BoothStatus {
   prints_today: number;
   prints_remaining: number;
   sessions_today: number;
+  /** Sheets loaded at the last recorded refill, or the assumed roll. */
+  paper_capacity: number;
+  /** When the operator last recorded a refill; null while the count is only an assumption. */
+  paper_loaded_at: string | null;
   printer: 'ready' | 'spooling' | 'low_media';
 }
 
@@ -78,7 +85,7 @@ export interface BoothEvent {
   prices: Record<string, number>;
   /** Set when the operator ends the event; the full photo gallery opens then. */
   ended_at: string | null;
-  /** New sessions mirror preview and result alike; see Session.mirror. */
+  /** Whether new sessions start mirrored; guests can still switch it. See Session.mirror. */
   mirror: boolean;
 }
 
@@ -91,6 +98,10 @@ export interface CustomFrame {
   name: string;
   /** The package layout it was made for: grid6, grid4, stack3 or single. */
   format: string;
+  /** The group guests browse it under, e.g. "Bioskop"; empty when the operator gave none. */
+  theme: string;
+  /** Kept but not offered to guests (e.g. a wedding theme between weddings). */
+  hidden: boolean;
   /** Where each hole sits on the 1200x1800 sheet, in reading order. */
   slots: { x: number; y: number; w: number; h: number; angle?: number }[];
   /** Where a browser loads the PNG from. */

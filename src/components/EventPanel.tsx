@@ -8,14 +8,10 @@ import type { BoothEvent, PaymentMode, PrintMode } from '@/lib/types';
 export default function EventPanel({
   event,
   prices: initialPrices,
-  galleryUrl,
-  galleryQr,
   xenditReady,
 }: {
   event: BoothEvent;
   prices: Record<string, number>;
-  galleryUrl: string;
-  galleryQr: string;
   xenditReady: boolean;
 }) {
   const router = useRouter();
@@ -101,51 +97,40 @@ export default function EventPanel({
   const dirty = () => setState('idle');
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
-        <span className="status-item">
-          <i className={`dot ${event.ended_at ? 'dot-warn' : 'dot-ok'}`} />
-          <span className="mono">{event.ended_at ? 'ACARA SELESAI · GALERI DIBUKA' : 'ACARA BERJALAN'}</span>
-        </span>
-        <label className="field-label">
-          <span className="mono mono-sm">NAMA ACARA (TERCETAK DI FOTO)</span>
+    <>
+      <section className="op-card">
+        <div className="op-card-head">
+          <h2>Pengaturan acara</h2>
+          {state === 'saved' && <span className="op-chip" data-tone="ok">Tersimpan</span>}
+        </div>
+
+        <label className="op-field">
+          <span className="op-label">Nama acara · tercetak di foto</span>
           <input className="field" value={name} maxLength={40} onChange={(e) => (setName(e.target.value), dirty())} />
         </label>
 
-        <div className="field-label">
-          <span className="mono mono-sm">PEMBAYARAN TAMU</span>
+        <div className="op-field">
+          <span className="op-label">Pembayaran tamu</span>
           <div className="segmented">
             <button aria-pressed={paymentMode === 'qris'} onClick={() => (setPaymentMode('qris'), dirty())}>
-              QRIS (tamu bayar)
+              QRIS
             </button>
             <button aria-pressed={paymentMode === 'free'} onClick={() => (setPaymentMode('free'), dirty())}>
-              Gratis (sewa acara)
+              Gratis (sewa)
             </button>
           </div>
           {paymentMode === 'qris' && !xenditReady && (
-            <div className="notice notice-error">XENDIT_SECRET_KEY belum diisi — tamu tidak akan bisa membayar.</div>
+            <div className="notice notice-error">XENDIT_SECRET_KEY belum diisi: tamu tidak akan bisa membayar.</div>
           )}
         </div>
 
-        <div className="field-label">
-          <span className="mono mono-sm">CETAK</span>
-          <div className="segmented">
-            <button aria-pressed={printMode === 'simulated'} onClick={() => (setPrintMode('simulated'), dirty())}>
-              Simulasi
-            </button>
-            <button aria-pressed={printMode === 'airprint'} onClick={() => (setPrintMode('airprint'), dirty())}>
-              AirPrint (SELPHY)
-            </button>
-          </div>
-        </div>
-
         {paymentMode === 'qris' && (
-          <div className="field-label">
-            <span className="mono mono-sm">HARGA (RUPIAH, 0 = GRATIS)</span>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+          <div className="op-field">
+            <span className="op-label">Harga (Rp · 0 = gratis)</span>
+            <div className="op-prices">
               {[...PACKAGES, ...ADDONS].map((item) => (
-                <label key={item.id} className="field-label">
-                  <span className="mono mono-sm">{item.label.toUpperCase()}</span>
+                <label key={item.id}>
+                  <span>{item.label}</span>
                   <input
                     className="field"
                     inputMode="numeric"
@@ -158,30 +143,44 @@ export default function EventPanel({
           </div>
         )}
 
+        <div className="op-field">
+          <span className="op-label">Cetak</span>
+          <div className="segmented">
+            <button aria-pressed={printMode === 'simulated'} onClick={() => (setPrintMode('simulated'), dirty())}>
+              Simulasi
+            </button>
+            <button aria-pressed={printMode === 'airprint'} onClick={() => (setPrintMode('airprint'), dirty())}>
+              AirPrint
+            </button>
+          </div>
+        </div>
+
         <label className="checkbox">
           <input type="checkbox" checked={gallery} onChange={(e) => (setGallery(e.target.checked), dirty())} />
-          <span style={{ fontSize: 14 }}>Galeri live aktif (tamu bisa memilih tidak ditampilkan)</span>
+          <span style={{ fontSize: 14 }}>Galeri & layar kedua aktif</span>
         </label>
 
         {error && <div className="notice notice-error">{error}</div>}
         <button className="pill" onClick={save} disabled={state === 'saving'}>
-          {state === 'saving' ? 'Menyimpan…' : state === 'saved' ? 'Tersimpan ✓' : 'Simpan pengaturan'}
+          {state === 'saving' ? 'Menyimpan…' : 'Simpan pengaturan'}
         </button>
-      </div>
+      </section>
 
-      <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-        <span className="mono">{event.ended_at ? 'GALERI FOTO TERBUKA' : 'SELAMA ACARA: LAYAR KEDUA'}</span>
-        <p className="muted" style={{ fontSize: 14 }}>
+      <section className="op-card">
+        <div className="op-card-head">
+          <h2>Status acara</h2>
+        </div>
+        <p className="op-muted">
           {event.ended_at
-            ? 'Link acara sekarang menampilkan galeri foto untuk didownload tamu.'
-            : 'Link acara menampilkan 3 video live tamu bergantian. Galeri foto dibuka saat acara diakhiri.'}
+            ? 'Selesai. Link acara sekarang menampilkan galeri foto untuk didownload tamu.'
+            : 'Berjalan. Link acara menampilkan video live tamu bergantian; galeri dibuka saat acara diakhiri.'}
         </p>
         {event.ended_at ? (
           <button className="pill pill-ghost" onClick={() => setEnded(false)} disabled={ending}>
-            {ending ? 'Membuka…' : 'Buka lagi acara (kembali ke layar kedua)'}
+            {ending ? 'Membuka…' : 'Buka lagi acara'}
           </button>
         ) : confirmEnd ? (
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <div className="op-row">
             <button className="pill" onClick={() => setEnded(true)} disabled={ending} style={{ flex: 1 }}>
               {ending ? 'Mengakhiri…' : 'Ya, akhiri & buka galeri'}
             </button>
@@ -194,37 +193,21 @@ export default function EventPanel({
             Akhiri acara
           </button>
         )}
-      </div>
 
-      {event.gallery && (
-        <div className="panel" style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={galleryQr} alt="QR galeri" style={{ width: 120, height: 120, borderRadius: 12, background: '#fff', padding: 6 }} />
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', minWidth: 0 }}>
-            <span className="mono">LINK ACARA</span>
-            <span className="mono mono-sm" style={{ wordBreak: 'break-all' }}>{galleryUrl}</span>
-            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-              <a className="pill pill-ghost pill-sm" href={galleryUrl} target="_blank" rel="noreferrer" style={{ display: 'inline-flex', alignItems: 'center' }}>
-                {event.ended_at ? 'Buka galeri' : 'Buka layar kedua'}
-              </a>
-            </div>
+        <div className="op-divider" />
+        <label className="op-field">
+          <span className="op-label">Mulai acara baru</span>
+          <div className="op-row op-row-fill">
+            <input className="field" placeholder="mis. Nikahan Rina & Dimas" value={newName} maxLength={40} onChange={(e) => setNewName(e.target.value)} />
+            <button className="pill pill-ghost" onClick={startNew} disabled={starting || !newName.trim()} style={{ flex: 'none' }}>
+              {starting ? 'Membuat…' : 'Mulai'}
+            </button>
           </div>
-        </div>
-      )}
-
-      <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        <span className="mono">MULAI ACARA BARU</span>
-        <p className="muted" style={{ fontSize: 14 }}>
-          Tamu berikutnya masuk ke acara baru dengan link sendiri. Acara ini otomatis diakhiri dan galerinya dibuka. Harga dan
-          pengaturan disalin.
+        </label>
+        <p className="op-muted" style={{ fontSize: 12 }}>
+          Acara ini otomatis diakhiri. Harga dan pengaturan disalin; link acara baru dibuat.
         </p>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <input className="field" placeholder="mis. Nikahan Rina & Dimas" value={newName} maxLength={40} onChange={(e) => setNewName(e.target.value)} />
-          <button className="pill pill-ghost" onClick={startNew} disabled={starting || !newName.trim()} style={{ flex: 'none' }}>
-            {starting ? 'Membuat…' : 'Mulai'}
-          </button>
-        </div>
-      </div>
-    </div>
+      </section>
+    </>
   );
 }

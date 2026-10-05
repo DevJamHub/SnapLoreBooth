@@ -9,6 +9,8 @@ const POLL_MS = 5000;
 const PAGE_MS = 9000;
 const FADE_MS = 800;
 
+const signature = (items: GalleryItem[]) => items.map((i) => `${i.id}:${i.live ?? ''}`).join('|');
+
 /**
  * One link, two faces. While the event runs it is the venue's second screen: three guests'
  * live sheets at a time, fading to the next three, round and round. When the operator ends
@@ -40,7 +42,8 @@ export default function LiveGallery({
         const data = (await res.json()) as { ended: boolean; items: GalleryItem[] };
         const arrived = data.items.filter((i) => !known.current.has(i.id)).map((i) => i.id);
         data.items.forEach((i) => known.current.add(i.id));
-        setItems(data.items);
+        // Most polls bring nothing new; keeping the same list spares the screen a re-render.
+        setItems((prev) => (signature(prev) === signature(data.items) ? prev : data.items));
         setEnded(data.ended);
         if (arrived.length > 0) setFresh((prev) => new Set([...prev, ...arrived]));
       } catch {

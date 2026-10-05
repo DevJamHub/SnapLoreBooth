@@ -10,6 +10,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const session = getSession(id);
   if (!session) return NextResponse.json({ error: 'session not found' }, { status: 404 });
   if (!sessionUnlocked(id)) return NextResponse.json({ error: 'session is not paid' }, { status: 402 });
+  // The sheet is printed and its QR handed out; its photos no longer change.
+  if (session.strip_file) return NextResponse.json({ error: 'sheet already made' }, { status: 409 });
 
   let body: { index?: unknown; dataUrl?: unknown };
   try {

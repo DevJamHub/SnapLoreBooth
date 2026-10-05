@@ -1,10 +1,9 @@
+import { getConfig } from './config';
 import { createPayment, getSession, isSessionPaid, latestPayment, markPaymentPaid } from './db';
 import { currentEvent } from './events';
 import type { Payment, Session } from './types';
 import { createDynamicQr, listQrPayments } from './xendit';
 
-/** How long a guest has to scan before the QR is retired and a fresh one issued. */
-const QR_TTL_MINUTES = Number(process.env.PAYMENT_QR_TTL_MINUTES ?? 10);
 /** Do not ask Xendit more often than this per QR; the webhook is the fast path. */
 const POLL_THROTTLE_MS = 3000;
 
@@ -45,7 +44,8 @@ export function ensurePayment(session: Session): Promise<Payment> {
 }
 
 async function issueQr(session: Session): Promise<Payment> {
-  const expiresAt = new Date(Date.now() + QR_TTL_MINUTES * 60_000);
+  // How long a guest has to scan before the QR is retired and a fresh one issued.
+  const expiresAt = new Date(Date.now() + getConfig().flow.paymentMinutes * 60_000);
   const qr = await createDynamicQr({
     // reference_id must be unique per QR, so a reissue after expiry gets its own suffix.
     referenceId: `${session.id}-${Date.now().toString(36)}`,

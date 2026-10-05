@@ -2,6 +2,8 @@ import { MJPEG_BOUNDARY } from './types';
 
 const SOI = Buffer.from([0xff, 0xd8]);
 const EOI = Buffer.from([0xff, 0xd9]);
+/** Far beyond any live-view frame (about 80 KB); past this the stream is garbage, not a frame. */
+const MAX_PENDING = 4 * 1024 * 1024;
 
 /**
  * `gphoto2 --capture-movie --stdout` emits JPEGs back to back with no framing, so we split
@@ -19,12 +21,14 @@ export function createJpegSplitter() {
         const start = buffer.indexOf(SOI);
         if (start === -1) {
           // Nothing usable yet; avoid growing the buffer without bound on a garbage stream.
-          if (buffer.length > 4 * 1024 * 1024) buffer = Buffer.alloc(0);
+          if (buffer.length > MAX_PENDING) buffer = Buffer.alloc(0);
           break;
         }
         const end = buffer.indexOf(EOI, start + 2);
         if (end === -1) {
-          if (start > 0) buffer = buffer.subarray(start);
+          // A frame that never ends would otherwise grow (and be copied) on every chunk.
+          if (buffer.length - start > MAX_PENDING) buffer = Buffer.alloc(0);
+          else if (start > 0) buffer = buffer.subarray(start);
           break;
         }
 

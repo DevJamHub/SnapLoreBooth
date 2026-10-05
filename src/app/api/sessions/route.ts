@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
+import { getConfig } from '@/lib/config';
 import { createSession, listSessions, updateSession } from '@/lib/db';
 import { currentEvent, priceOf } from '@/lib/events';
-import { EXTRA_PRINT, MAX_EXTRA_PRINTS, packageById } from '@/lib/packages';
+import { EXTRA_PRINT, packageById } from '@/lib/packages';
 import { paymentsEnabled } from '@/lib/payments';
 
 export const dynamic = 'force-dynamic';
@@ -26,12 +27,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'body must be JSON' }, { status: 400 });
   }
 
+  const config = getConfig();
   const pkg = packageById(String(body.packageId ?? ''));
   if (!pkg) return NextResponse.json({ error: 'unknown packageId' }, { status: 400 });
+  if (!config.packages.enabled.includes(pkg.id)) return NextResponse.json({ error: 'package is switched off' }, { status: 400 });
 
+  const maxExtra = config.packages.extraPrints ? config.packages.maxExtra : 0;
   const extraPrints = body.extraPrints === undefined ? 0 : Number(body.extraPrints);
-  if (!Number.isInteger(extraPrints) || extraPrints < 0 || extraPrints > MAX_EXTRA_PRINTS) {
-    return NextResponse.json({ error: `extraPrints must be an integer between 0 and ${MAX_EXTRA_PRINTS}` }, { status: 400 });
+  if (!Number.isInteger(extraPrints) || extraPrints < 0 || extraPrints > maxExtra) {
+    return NextResponse.json({ error: `extraPrints must be an integer between 0 and ${maxExtra}` }, { status: 400 });
   }
 
   // The price is always worked out here from the event's price list; the kiosk never sends one.
@@ -51,6 +55,9 @@ export async function POST(request: Request) {
     // Nothing to collect on a zero total, even when the event takes QRIS.
     requiresPayment: paymentsEnabled() && priceIdr > 0,
     mirror: event.mirror,
+    filter: config.style.defaultFilter,
+    beauty: config.style.beauty ? config.style.defaultBeauty : 'off',
+    inGallery: config.share.galleryDefault,
   });
 
   // The guest styles the frame before paying, so a session opens on the Hias step.

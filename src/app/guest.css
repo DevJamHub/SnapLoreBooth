@@ -1,9 +1,7 @@
 /* Guest-facing kiosk screens. Big, calm, one decision per screen; nothing a guest has to
    read twice. Operator screens keep the denser styles in globals.css. */
 
-.g-screen,
-.standby,
-.cap {
+.g-screen, .standby {
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
@@ -247,8 +245,11 @@
 }
 
 /* ---------- package picker ---------- */
-.pkg-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-lg); }
 .pkg-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+/* Fewer packages switched on: the cards keep a card's width, centred, instead of stretching. */
+.pkg-grid[data-count='3'] { grid-template-columns: repeat(3, minmax(0, 340px)); justify-content: center; }
+.pkg-grid[data-count='2'] { grid-template-columns: repeat(2, minmax(0, 340px)); justify-content: center; }
+.pkg-grid[data-count='1'] { grid-template-columns: minmax(0, 340px); justify-content: center; }
 .pkg-card {
   position: relative;
   display: flex;
@@ -477,89 +478,10 @@
 .g-modal-actions > * { flex: 1; }
 
 /* ---------- capture ---------- */
-.cap { position: relative; height: 100dvh; overflow: hidden; background: #000; }
-.cap-feed { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.cap-top {
-  position: absolute;
-  inset: 0 0 auto 0;
-  z-index: 3;
-  padding: 28px 36px 60px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: linear-gradient(rgba(0, 0, 0, 0.6), transparent);
-}
-.cap-bottom {
-  position: absolute;
-  inset: auto 0 0 0;
-  z-index: 3;
-  padding: 80px 36px 36px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 22px;
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.72));
-}
-.cap-pose {
-  font-family: var(--font-display), serif;
-  font-size: 38px;
-  line-height: 1.15;
-  text-align: center;
-  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.8);
-  max-width: 24ch;
-}
-.cap-shots { display: flex; gap: 12px; }
-.cap-shot {
-  width: 78px;
-  height: 58px;
-  border-radius: 12px;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  background: rgba(255, 255, 255, 0.08);
-  overflow: hidden;
-  display: grid;
-  place-items: center;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.7);
-}
-.cap-shot[data-active='true'] { border-color: var(--primary); box-shadow: 0 0 0 4px rgba(204, 120, 92, 0.3); color: #fff; }
-.cap-shot img { width: 100%; height: 100%; object-fit: cover; }
-.cap-count {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: grid;
-  place-items: center;
-  pointer-events: none;
-}
-.cap-count span {
-  font-family: var(--font-display), serif;
-  font-size: min(42vh, 320px);
-  line-height: 1;
-  color: #fff;
-  text-shadow: 0 12px 60px rgba(0, 0, 0, 0.65);
-  animation: tick 1s ease-out;
-}
 @keyframes tick { from { transform: scale(1.35); opacity: 0; } 25% { opacity: 1; } to { transform: scale(0.92); opacity: 0.85; } }
-.cap-snap {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  display: grid;
-  place-items: center;
-  background: rgba(0, 0, 0, 0.55);
-  animation: fadeIn 200ms ease-out;
-}
-.cap-snap img {
-  max-width: 72%;
-  max-height: 72%;
-  border: 14px solid #f3eee8;
-  border-bottom-width: 48px;
-  border-radius: 6px;
-  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.9);
-  animation: snapIn 520ms cubic-bezier(0.2, 1.2, 0.4, 1);
-}
 @keyframes snapIn { from { transform: scale(1.25) rotate(4deg); opacity: 0; } to { transform: scale(1) rotate(-2deg); opacity: 1; } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes flash { from { opacity: 0.85; } to { opacity: 0; } }
 .cap-flash { position: absolute; inset: 0; z-index: 6; background: #fff; animation: flash 480ms ease-out forwards; pointer-events: none; }
 .cap-problem {
   position: absolute;
@@ -647,6 +569,104 @@
 .rv-thumb-frame img { object-fit: contain; }
 .rv-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- hias: frames by theme, the guest live inside the chosen one ---------- */
+.fr-board {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 4px;
+  box-shadow: 0 24px 50px -18px rgba(0, 0, 0, 0.85);
+  background: #fff;
+}
+/* The camera feeding the preview: playing (iOS only decodes what is in the page) but unseen. */
+.fr-source { position: absolute; left: 0; top: 0; width: 2px; height: 2px; opacity: 0.01; pointer-events: none; }
+.fr-live {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(24, 24, 22, 0.72);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.fr-themes { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+.fr-themes::-webkit-scrollbar { display: none; }
+.fr-theme {
+  flex: 0 0 auto;
+  min-height: 52px;
+  padding: 0 20px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border);
+  background: var(--surface-1);
+  color: var(--muted);
+  font-size: 17px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+.fr-theme small {
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+.fr-theme[aria-selected='true'] { border-color: var(--primary); color: var(--text); }
+.fr-theme[aria-selected='true'] small { background: var(--primary); color: #1b1410; }
+.fr-theme:active { transform: scale(0.97); }
+.fr-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.fr-thumb { aspect-ratio: 2 / 3; background-clip: padding-box; }
+.fr-note { margin: 0; font-size: 15px; color: var(--muted); }
+
+/* ---------- gaya: look and beauty on the guest's own photos ---------- */
+.st-board { touch-action: none; cursor: pointer; }
+.st-board img { -webkit-user-drag: none; }
+.st-hint {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(24, 24, 22, 0.72);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.st-hint[data-on='true'] { background: var(--primary); color: #1b1410; }
+.st-beauty { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.st-beauty button {
+  min-height: 84px;
+  padding: 12px 14px;
+  border-radius: 20px;
+  border: 2px solid var(--border);
+  background: var(--surface-1);
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease;
+}
+.st-beauty button b { font-size: 19px; color: var(--text); }
+.st-beauty button small { font-size: 13px; line-height: 1.3; }
+.st-beauty button[aria-checked='true'] { border-color: var(--primary); background: rgba(204, 120, 92, 0.1); }
+.st-beauty button:active:not(:disabled) { transform: scale(0.97); }
+
 /* ---------- share ---------- */
 .sh-layout {
   flex: 1;
@@ -719,7 +739,7 @@
   .g-screen { padding: 22px 22px 24px; height: auto; min-height: 100dvh; overflow: visible; }
   .g-steps .g-step b { display: none; }
   .g-header-side { flex-basis: auto; }
-  .pkg-grid { grid-template-columns: 1fr; }
+  .pkg-grid, .pkg-grid[data-count] { grid-template-columns: 1fr; }
   .pkg-art { min-height: 180px; }
   .pay-layout, .rv-layout, .sh-layout { grid-template-columns: 1fr; gap: 28px; }
   .rv-board, .sh-print { height: 52vh; }
@@ -733,7 +753,8 @@
 @media print {
   @page { size: 4in 6in; margin: 0; }
   html, body { background: #fff !important; height: auto !important; }
-  .g-screen, .standby, .cap { display: none !important; }
+  .g-screen, .standby, .no-print { display: none !important; }
+  .op { padding: 0 !important; min-height: 0 !important; }
   .print-only { display: block; }
   .print-sheet {
     width: 4in;
@@ -861,6 +882,50 @@
   overflow: hidden;
 }
 .cap2-camera .fit { inset: 16px; }
+/* The guest's mirror switch: preview and print flip together. */
+.cap2-mirror {
+  position: absolute;
+  top: 26px;
+  right: 26px;
+  z-index: 2;
+  min-height: 48px;
+  padding: 0 16px 0 10px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(24, 24, 22, 0.72);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.cap2-mirror:disabled { opacity: 0.45; }
+.cap2-mirror:active:not(:disabled) { transform: scale(0.96); }
+.cap2-switch {
+  position: relative;
+  width: 40px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.25);
+  transition: background 160ms ease;
+}
+.cap2-switch::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #fff;
+  transition: transform 160ms ease;
+}
+.cap2-mirror[aria-pressed='true'] .cap2-switch { background: var(--primary); }
+.cap2-mirror[aria-pressed='true'] .cap2-switch::after { transform: translateX(16px); background: #1b1410; }
 /* Room above the sheet for the retake hint, reserved in every phase so the sheet never moves. */
 .cap2-sheet .fit { inset: 50px 16px 16px; }
 .cap2-sheet-hint {
@@ -939,6 +1004,16 @@
   .cap2-body { grid-template-columns: 1fr; grid-auto-rows: 52vh 60vh; }
 }
 
+/* Six steps: tighter on an iPad's width, labels kept for the current step only on narrow ones. */
+@media (max-width: 1280px) {
+  .g-steps { gap: 6px; }
+  .g-step-line { width: 14px; }
+  .g-header-side { flex-basis: 150px; }
+}
+@media (max-width: 1080px) {
+  .g-step:not([data-state='current']) b { display: none; }
+}
+
 /* Live clips on the guest's phone: they loop like a GIF, silently. */
 .dl-clips { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; width: min(100%, 420px); }
 /* Files are stored as the sensor saw them; a mirrored session shows them as the guest did. */
@@ -947,6 +1022,9 @@
 .dl-clips figure { margin: 0; display: flex; flex-direction: column; gap: 6px; }
 .dl-clips video { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 14px; background: #000; }
 .dl-clips a { font-size: 14px; color: var(--primary); text-decoration: none; font-weight: 600; }
+
+/* The operator's line for guests on the QR page. */
+.dl-message { margin: 0; max-width: 34ch; font-family: var(--font-display), Georgia, serif; font-size: 22px; line-height: 1.3; color: var(--primary); text-align: center; }
 
 /* Progress of the live sheet being made for the QR page. */
 .sh-live-note { margin-top: 6px; color: var(--primary) !important; font-weight: 600; font-size: 15px; }
@@ -980,6 +1058,11 @@
   .rv-side { gap: 14px; }
   .rv-label { margin-bottom: 8px; }
   .rv-thumb { border-radius: 14px; }
+  .fr-theme { min-height: 44px; font-size: 15px; padding: 0 16px; }
+  .fr-grid { gap: 10px; }
+  .st-beauty button { min-height: 68px; padding: 8px 12px; }
+  .st-beauty button b { font-size: 17px; }
+  .cap2-mirror { min-height: 40px; top: 22px; right: 22px; font-size: 14px; }
 
   .pay-layout { gap: 32px; }
   .pay-copy { gap: 14px; }

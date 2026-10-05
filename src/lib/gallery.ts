@@ -1,4 +1,5 @@
 import { galleryItems } from './db';
+import { mediaUrl } from './format';
 
 export interface GalleryItem {
   id: string;
@@ -8,13 +9,11 @@ export interface GalleryItem {
   created_at: string;
 }
 
-const media = (file: string) => `/api/media/${file.split('/').map(encodeURIComponent).join('/')}`;
-
 export function galleryFor(eventId: string): GalleryItem[] {
   return galleryItems(eventId).map((row) => ({
     id: row.id,
-    src: media(row.strip_file),
-    live: row.live_file ? media(row.live_file) : null,
+    src: mediaUrl(row.strip_file),
+    live: row.live_file ? mediaUrl(row.live_file) : null,
     created_at: row.created_at,
   }));
 }

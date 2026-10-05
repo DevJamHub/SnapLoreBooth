@@ -5,19 +5,32 @@ import { useRouter } from 'next/navigation';
 import GuestHeader from '@/components/guest/GuestHeader';
 import { useIdle } from '@/components/guest/hooks';
 import { ArrowLeft, ArrowRight, Check } from '@/components/guest/icons';
-import { EXTRA_PRINT, MAX_EXTRA_PRINTS, PACKAGES, formatPrice } from '@/lib/packages';
+import { EXTRA_PRINT, PACKAGES, formatPrice } from '@/lib/packages';
 import type { Session } from '@/lib/types';
 
-const IDLE_MS = 60_000;
-
-export default function PackagePicker({ payments, prices }: { payments: boolean; prices: Record<string, number> }) {
+export default function PackagePicker({
+  payments,
+  prices,
+  enabled,
+  maxExtra,
+  idleSeconds,
+}: {
+  payments: boolean;
+  prices: Record<string, number>;
+  /** Package ids the operator offers. */
+  enabled: string[];
+  /** 0 hides extra prints. */
+  maxExtra: number;
+  idleSeconds: number;
+}) {
   const router = useRouter();
-  const [packageId, setPackageId] = useState(PACKAGES[0].id);
+  const packages = PACKAGES.filter((p) => enabled.includes(p.id));
+  const [packageId, setPackageId] = useState(packages[0]?.id ?? PACKAGES[0].id);
   const [extra, setExtra] = useState(0);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useIdle(starting ? null : IDLE_MS, () => router.replace('/'));
+  useIdle(starting ? null : idleSeconds * 1000, () => router.replace('/'));
 
   const price = (id: string) => prices[id] ?? 0;
   const total = price(packageId) + extra * price(EXTRA_PRINT.id);
@@ -55,8 +68,8 @@ export default function PackagePicker({ payments, prices }: { payments: boolean;
 
       <h1 className="g-title">Mau berapa pose?</h1>
 
-      <div className="pkg-grid">
-        {PACKAGES.map((pkg) => (
+      <div className="pkg-grid" data-count={packages.length}>
+        {packages.map((pkg) => (
           <button key={pkg.id} className="pkg-card" aria-pressed={pkg.id === packageId} onClick={() => setPackageId(pkg.id)}>
             <span className="pkg-tick">
               <Check />
@@ -87,7 +100,7 @@ export default function PackagePicker({ payments, prices }: { payments: boolean;
           </div>
           <div className="g-bar-value">{payments ? (total > 0 ? formatPrice(total) : 'Gratis') : 'Gratis'}</div>
         </div>
-        <div className="stepper" aria-label="Cetak tambahan">
+        <div className="stepper" aria-label="Cetak tambahan" hidden={maxExtra === 0}>
           <button className="stepper-btn" onClick={() => setExtra((n) => Math.max(n - 1, 0))} disabled={extra === 0} aria-label="Kurangi cetakan">
             −
           </button>
@@ -98,7 +111,7 @@ export default function PackagePicker({ payments, prices }: { payments: boolean;
               {payments && price(EXTRA_PRINT.id) > 0 ? ` · ${formatPrice(price(EXTRA_PRINT.id))}/lembar` : ''}
             </small>
           </div>
-          <button className="stepper-btn" onClick={() => setExtra((n) => Math.min(n + 1, MAX_EXTRA_PRINTS))} disabled={extra >= MAX_EXTRA_PRINTS} aria-label="Tambah cetakan">
+          <button className="stepper-btn" onClick={() => setExtra((n) => Math.min(n + 1, maxExtra))} disabled={extra >= maxExtra} aria-label="Tambah cetakan">
             +
           </button>
         </div>

@@ -2,16 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1_000_000) return `${Math.round(bytes / 1000)} KB`;
-  if (bytes < 1_000_000_000) return `${Math.round(bytes / 1_000_000)} MB`;
-  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-}
-
-function formatRetention(hours: number): string {
-  return hours >= 48 && hours % 24 === 0 ? `${hours / 24} hari` : `${hours} jam`;
-}
+import { formatBytes, formatRetention } from '@/lib/format';
 
 /** Shows what guest data the booth holds, and wipes it behind a typed confirmation. */
 export default function GuestDataPanel({
@@ -67,13 +58,18 @@ export default function GuestDataPanel({
   };
 
   return (
-    <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-      <span className="mono">DATA TAMU</span>
+    <section className="op-card">
+      <div className="op-card-head">
+        <h2>Data tamu</h2>
+      </div>
       <p style={{ fontSize: 14 }}>
         <b>{sessions} sesi</b> · {formatBytes(bytes)} foto & video tersimpan di booth ini.
       </p>
-      <p className="muted" style={{ fontSize: 13 }}>
-        Terhapus otomatis {formatRetention(retentionHours)} setelah sesi dibuat.
+      <p className="op-muted">
+        Terhapus otomatis {formatRetention(retentionHours)} setelah sesi dibuat.{' '}
+        <a href="/operator/pengaturan#set-storage" style={{ color: 'var(--primary)' }}>
+          Atur penyimpanan
+        </a>
       </p>
 
       {result && <div className="notice">{result}</div>}
@@ -126,6 +122,6 @@ export default function GuestDataPanel({
       )}
 
       {error && <div className="notice notice-error">{error}</div>}
-    </div>
+    </section>
   );
 }

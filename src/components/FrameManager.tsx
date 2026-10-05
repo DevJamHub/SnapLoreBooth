@@ -2,28 +2,57 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import { FrameFileError, frameGuide, prepareFrame, type PreparedFrame } from '@/lib/frameDesign';
-import { PACKAGES } from '@/lib/packages';
+import { PACKAGES, UNSORTED_THEME } from '@/lib/packages';
 import { composeStrip } from '@/lib/strip';
 import type { CustomFrame } from '@/lib/types';
 
 const MAX_NAME = 24;
+const MAX_THEME = 20;
 
 function packageLabel(format: string): string {
   return PACKAGES.find((p) => p.format === format)?.label ?? format;
 }
 
+/** Themes in use, in the order they first appeared (frames come oldest first). */
+function themesOf(frames: CustomFrame[]): string[] {
+  return [...new Set(frames.map((f) => f.theme).filter(Boolean))];
+}
+
+function ThemeChips({ themes, value, onPick }: { themes: string[]; value: string; onPick: (theme: string) => void }) {
+  if (themes.length === 0) return null;
+  return (
+    <div className="frame-theme-chips">
+      {themes.map((t) => (
+        <button key={t} type="button" className="pill pill-ghost pill-sm" aria-pressed={value.toLowerCase() === t.toLowerCase()} onClick={() => onPick(t)}>
+          {t}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function FrameManager({ frames }: { frames: CustomFrame[] }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
+  const themes = themesOf(frames);
   const [prepared, setPrepared] = useState<PreparedFrame | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [name, setName] = useState('');
+  // Kept between uploads: a theme's frames usually come one after another.
+  const [theme, setTheme] = useState('');
+  const [editing, setEditing] = useState<{ id: string; name: string; theme: string } | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
   const [busy, setBusy] = useState<'reading' | 'saving' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [toggling, setToggling] = useState(false);
+  const [themeAction, setThemeAction] = useState<{ theme: string; hide: boolean } | null>(null);
+  const deleteTarget = frames.find((f) => f.id === confirmDelete) ?? null;
 
   // The prepared PNG lives in an object URL until it is saved or dropped.
   useEffect(() => () => void (prepared && URL.revokeObjectURL(prepared.url)), [prepared]);
@@ -32,7 +61,7 @@ export default function FrameManager({ frames }: { frames: CustomFrame[] }) {
   useEffect(() => {
     if (!prepared) return setPreview(null);
     let cancelled = false;
-    const draft: CustomFrame = { id: 'draft', name, format: prepared.format, slots: prepared.slots, src: prepared.url, created_at: '' };
+    const draft: CustomFrame = { id: 'draft', name, theme: '', hidden: false, format: prepared.format, slots: prepared.slots, src: prepared.url, created_at: '' };
     composeStrip(
       prepared.slots.map(() => null),
       { format: prepared.format, filterId: 'original', templateId: 'draft', eventName: '', capturedAt: new Date(), frame: draft },
@@ -79,12 +108,15 @@ export default function FrameManager({ frames }: { frames: CustomFrame[] }) {
       const form = new FormData();
       form.append('file', prepared.blob, 'frame.png');
       form.append('name', name.trim());
+      form.append('theme', theme.trim());
       form.append('format', prepared.format);
       form.append('slots', JSON.stringify(prepared.slots));
       const res = await fetch('/api/operator/frames', { method: 'POST', body: form });
       const data = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(data.error ?? 'gagal menyimpan frame');
-      setSaved(`Frame "${name.trim()}" tersimpan. Tamu paket ${packageLabel(prepared.format)} sekarang bisa memilihnya.`);
+      setSaved(
+        `Frame "${name.trim()}" tersimpan di tema ${theme.trim() || UNSORTED_THEME}. Tamu paket ${packageLabel(prepared.format)} sekarang bisa memilihnya.`,
+      );
       reset();
       router.refresh();
     } catch (err) {
@@ -94,9 +126,54 @@ export default function FrameManager({ frames }: { frames: CustomFrame[] }) {
     }
   };
 
+  const saveEdit = async () => {
+    if (!editing || !editing.name.trim()) return;
+    setSavingEdit(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/operator/frames/${editing.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: editing.name.trim(), theme: editing.theme.trim() }),
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? 'gagal menyimpan perubahan');
+      setEditing(null);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'gagal menyimpan perubahan');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  /** Shows or hides frames for guests; the frames themselves stay. */
+  const setHidden = async (ids: string[], hidden: boolean) => {
+    setToggling(true);
+    setError(null);
+    try {
+      const results = await Promise.all(
+        ids.map((id) =>
+          fetch(`/api/operator/frames/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hidden }),
+          }),
+        ),
+      );
+      if (results.some((r) => !r.ok)) throw new Error('sebagian frame gagal diubah');
+      setThemeAction(null);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'gagal mengubah frame');
+    } finally {
+      setToggling(false);
+    }
+  };
+
   const remove = async (id: string) => {
     setDeleting(true);
-    setError(null);
+    setDeleteError(null);
     try {
       const res = await fetch(`/api/operator/frames/${id}`, { method: 'DELETE' });
       const data = (await res.json()) as { error?: string };
@@ -104,7 +181,7 @@ export default function FrameManager({ frames }: { frames: CustomFrame[] }) {
       setConfirmDelete(null);
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'gagal menghapus frame');
+      setDeleteError(err instanceof Error ? err.message : 'gagal menghapus frame');
     } finally {
       setDeleting(false);
     }
@@ -126,7 +203,7 @@ export default function FrameManager({ frames }: { frames: CustomFrame[] }) {
 
   return (
     <div className="kiosk-body">
-      <section className="col-deck scroll" style={{ flex: '0 0 420px' }}>
+      <section className="col-deck frame-side">
         <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
           <span className="mono">UPLOAD FRAME</span>
           <p className="muted" style={{ fontSize: 14 }}>
@@ -180,6 +257,18 @@ export default function FrameManager({ frames }: { frames: CustomFrame[] }) {
                 <span className="mono mono-sm">NAMA FRAME (TERLIHAT OLEH TAMU)</span>
                 <input className="field" value={name} maxLength={MAX_NAME} onChange={(e) => setName(e.target.value)} />
               </label>
+              <label className="field-label">
+                <span className="mono mono-sm">TEMA (MIS. BIOSKOP, ROMANCE)</span>
+                <input
+                  className="field"
+                  list="frame-themes"
+                  value={theme}
+                  maxLength={MAX_THEME}
+                  placeholder={`Kosong = ${UNSORTED_THEME}`}
+                  onChange={(e) => setTheme(e.target.value)}
+                />
+              </label>
+              <ThemeChips themes={themes} value={theme} onPick={setTheme} />
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 <button className="pill" onClick={save} disabled={busy !== null || !name.trim() || !preview} style={{ flex: 1 }}>
                   {busy === 'saving' ? 'Menyimpan…' : 'Simpan frame'}
@@ -217,44 +306,97 @@ export default function FrameManager({ frames }: { frames: CustomFrame[] }) {
 
       <div className="panel scroll" style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
         <h3>Frame tersimpan</h3>
+        <datalist id="frame-themes">
+          {themes.map((t) => (
+            <option key={t} value={t} />
+          ))}
+        </datalist>
         {frames.length === 0 ? (
-          <p className="muted">Belum ada frame upload. Tamu memakai frame bawaan (Klasik, Malam, Terakota, Polos, Galeri).</p>
+          <p className="muted">Belum ada frame upload. Tamu memakai frame bawaan (tema Simpel: Klasik, Malam, Terakota, Polos, Galeri).</p>
         ) : (
-          PACKAGES.map((pkg) => {
-            const list = frames.filter((f) => f.format === pkg.format);
+          [...themes, ''].map((group) => {
+            const list = frames.filter((f) => f.theme === group);
             if (list.length === 0) return null;
+            const shown = list.filter((f) => !f.hidden).length;
             return (
-              <section key={pkg.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                <span className="mono">{pkg.label.toUpperCase()}</span>
+              <section key={group || '-'} style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+                <div className="frame-theme-head">
+                  <span className="mono">
+                    {(group || UNSORTED_THEME).toUpperCase()} · {list.length} FRAME{shown < list.length ? ` · ${list.length - shown} DISEMBUNYIKAN` : ''}
+                  </span>
+                  <button
+                    className="pill pill-ghost pill-sm"
+                    onClick={() => setThemeAction({ theme: group, hide: shown > 0 })}
+                    disabled={toggling}
+                  >
+                    {shown > 0 ? 'Sembunyikan tema' : 'Tampilkan tema'}
+                  </button>
+                </div>
                 <div className="frame-grid">
                   {list.map((f) => (
-                    <div key={f.id} className="frame-card">
+                    <div key={f.id} className="frame-card" data-hidden={f.hidden}>
                       <div className="frame-thumb">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={f.src} alt={f.name} />
                       </div>
-                      <b style={{ fontSize: 15 }}>{f.name}</b>
-                      <span className="mono mono-sm">
-                        {new Date(f.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
-                      </span>
-                      {confirmDelete === f.id ? (
+                      {editing?.id === f.id ? (
                         <>
-                          <div className="notice notice-error" style={{ fontSize: 13 }}>
-                            Hapus frame ini permanen? Tamu tidak bisa memilihnya lagi. Foto yang sudah jadi tidak berubah.
-                          </div>
+                          <input
+                            className="field"
+                            value={editing.name}
+                            maxLength={MAX_NAME}
+                            aria-label="Nama frame"
+                            onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                          />
+                          <input
+                            className="field"
+                            list="frame-themes"
+                            value={editing.theme}
+                            maxLength={MAX_THEME}
+                            placeholder={`Tema (kosong = ${UNSORTED_THEME})`}
+                            aria-label="Tema"
+                            onChange={(e) => setEditing({ ...editing, theme: e.target.value })}
+                          />
                           <div style={{ display: 'flex', gap: '0.4rem' }}>
-                            <button className="pill pill-danger pill-sm" onClick={() => void remove(f.id)} disabled={deleting} style={{ flex: 1 }}>
-                              {deleting ? 'Menghapus…' : 'Ya, hapus'}
+                            <button className="pill pill-sm" onClick={() => void saveEdit()} disabled={savingEdit || !editing.name.trim()} style={{ flex: 1 }}>
+                              {savingEdit ? 'Menyimpan…' : 'Simpan'}
                             </button>
-                            <button className="pill pill-ghost pill-sm" onClick={() => setConfirmDelete(null)} disabled={deleting}>
+                            <button className="pill pill-ghost pill-sm" onClick={() => setEditing(null)} disabled={savingEdit}>
                               Batal
                             </button>
                           </div>
                         </>
                       ) : (
-                        <button className="pill pill-ghost pill-sm" onClick={() => setConfirmDelete(f.id)}>
-                          Hapus
-                        </button>
+                        <>
+                          <b style={{ fontSize: 15 }}>{f.name}</b>
+                          <span className="mono mono-sm">
+                            {packageLabel(f.format)} ·{' '}
+                            {new Date(f.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          </span>
+                          <label className="checkbox frame-visible">
+                            <input type="checkbox" checked={!f.hidden} disabled={toggling} onChange={(e) => void setHidden([f.id], !e.target.checked)} />
+                            <span>{f.hidden ? 'Disembunyikan dari tamu' : 'Tampil ke tamu'}</span>
+                          </label>
+                          <div style={{ display: 'flex', gap: '0.4rem' }}>
+                            <button
+                              className="pill pill-ghost pill-sm"
+                              style={{ flex: 1 }}
+                              onClick={() => setEditing({ id: f.id, name: f.name, theme: f.theme })}
+                            >
+                              Ubah
+                            </button>
+                            <button
+                              className="pill pill-ghost pill-sm pill-danger-text"
+                              onClick={() => {
+                                setEditing(null);
+                                setDeleteError(null);
+                                setConfirmDelete(f.id);
+                              }}
+                            >
+                              Hapus
+                            </button>
+                          </div>
+                        </>
                       )}
                     </div>
                   ))}
@@ -264,6 +406,46 @@ export default function FrameManager({ frames }: { frames: CustomFrame[] }) {
           })
         )}
       </div>
+
+      {themeAction && (
+        <ConfirmDialog
+          title={`${themeAction.hide ? 'Sembunyikan' : 'Tampilkan'} tema ${themeAction.theme || UNSORTED_THEME}?`}
+          confirmLabel={themeAction.hide ? 'Ya, sembunyikan' : 'Ya, tampilkan'}
+          tone="normal"
+          busy={toggling}
+          error={error}
+          onConfirm={() =>
+            void setHidden(
+              frames.filter((f) => f.theme === themeAction.theme).map((f) => f.id),
+              themeAction.hide,
+            )
+          }
+          onCancel={() => setThemeAction(null)}
+        >
+          <p>
+            {themeAction.hide
+              ? 'Semua frame di tema ini tidak ditawarkan ke tamu, mis. tema nikahan saat acara kantor. Frame tetap tersimpan dan bisa ditampilkan lagi kapan saja.'
+              : 'Semua frame di tema ini ditawarkan lagi ke tamu di layar Hias.'}
+          </p>
+        </ConfirmDialog>
+      )}
+
+      {deleteTarget && (
+        <ConfirmDialog
+          title={`Hapus frame "${deleteTarget.name}"?`}
+          confirmLabel="Ya, hapus frame"
+          busy={deleting}
+          error={deleteError}
+          onConfirm={() => void remove(deleteTarget.id)}
+          onCancel={() => setConfirmDelete(null)}
+        >
+          <p>
+            Frame tema {deleteTarget.theme || UNSORTED_THEME} untuk paket {packageLabel(deleteTarget.format)} dihapus permanen. Tamu
+            tidak bisa memilihnya lagi.
+          </p>
+          <p className="op-muted">Foto yang sudah jadi dengan frame ini tidak berubah.</p>
+        </ConfirmDialog>
+      )}
     </div>
   );
 }

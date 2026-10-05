@@ -1,8 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import { SHUTTER_LAG_KEY } from '@/components/CaptureStage';
-import type { CameraStatus } from '@/lib/camera/types';
+import { shutterLagKey } from '@/components/guest/deviceKeys';
+import { exposureCorrection, shutterSeconds } from '@/lib/camera/exposure';
+import type { AutoSetupStep, CameraInfo, CameraSettings, CameraStatus } from '@/lib/camera/types';
+import { mediaUrl } from '@/lib/format';
 import { readEvents } from '@/lib/readEvents';
 import { readJson } from '@/lib/readJson';
 
@@ -42,7 +44,7 @@ export async function fireTestShot(requireFocus = false): Promise<TestShot> {
       return {
         lagMs: lagMs ?? performance.now() - started,
         file: event.file,
-        src: `/api/media/${event.file.split('/').map(encodeURIComponent).join('/')}?t=${Date.now()}`,
+        src: mediaUrl(event.file, String(Date.now())),
       };
     }
   }
@@ -73,19 +75,17 @@ async function measureExposure(src: string): Promise<{ mean: number; dark: numbe
   return { mean: sum / pixels, dark: dark / pixels, bright: bright / pixels };
 }
 
-/** "1/125" → 0.008, "0.3" or 1" → seconds. */
-function shutterSeconds(value: string | null): number | null {
-  if (!value) return null;
-  const fraction = /^(\d+)\/(\d+)$/.exec(value.trim());
-  if (fraction) return Number(fraction[1]) / Number(fraction[2]);
-  const seconds = Number.parseFloat(value);
-  return Number.isFinite(seconds) ? seconds : null;
-}
-
 const seconds = (ms: number) => (ms / 1000).toLocaleString('id-ID', { maximumFractionDigits: 1 });
 
 /** Turns what was read and measured into a checklist with what to change. */
-function judge(status: CameraStatus, exposure: { mean: number; dark: number; bright: number } | null, lagMs: number | null, focused: boolean | null): Check[] {
+function judge(
+  status: CameraStatus,
+  exposure: { mean: number; dark: number; bright: number } | null,
+  lagMs: number | null,
+  focused: boolean | null,
+  /** The automatic calibration already moved ISO, shutter or aperture as far as it safely could. */
+  corrected = false,
+): Check[] {
   const checks: Check[] = [{ title: 'Terhubung', level: 'ok', detail: status.model ?? 'Kamera eksternal' }];
 
   const battery = Number.parseInt(status.battery ?? '', 10);
@@ -149,13 +149,17 @@ function judge(status: CameraStatus, exposure: { mean: number; dark: number; bri
         ? {
             title: `Foto terlalu gelap (${mean}/255)`,
             level: exposure.mean < 60 ? 'bad' : 'warn',
-            detail: 'Tambah lampu di depan tamu, naikkan ISO, atau buka bukaan (angka f lebih kecil). Rana jangan lebih lambat dari 1/60.',
+            detail: corrected
+              ? 'ISO, rana, dan bukaan sudah disetel otomatis sampai batas aman. Tambah lampu di depan tamu, lalu kalibrasi lagi.'
+              : 'Tambah lampu di depan tamu, naikkan ISO, atau buka bukaan (angka f lebih kecil). Rana jangan lebih lambat dari 1/60.',
           }
         : tooBright
           ? {
               title: `Foto terlalu terang (${mean}/255)`,
               level: 'warn',
-              detail: 'Turunkan ISO, perkecil bukaan (angka f lebih besar), atau percepat rana.',
+              detail: corrected
+                ? 'Sudah disetel otomatis sampai batas aman. Kurangi atau jauhkan lampu, lalu kalibrasi lagi.'
+                : 'Turunkan ISO, perkecil bukaan (angka f lebih besar), atau percepat rana.',
             }
           : { title: `Terang foto pas (${mean}/255)`, level: 'ok', detail: 'Wajah tidak gelap dan tidak silau.' },
     );
@@ -168,7 +172,7 @@ function judge(status: CameraStatus, exposure: { mean: number; dark: number; bri
         : {
             title: 'Autofokus tidak mengunci',
             level: 'warn',
-            detail: 'Booth tetap memotret, tapi bisa kurang tajam. Tambah lampu, atau fokuskan sekali ke titik berdiri tamu lalu set MF.',
+            detail: 'Booth tetap memotret, tapi bisa kurang tajam. Tambah lampu, atau pakai Kunci fokus di bawah.',
           },
     );
   }
@@ -180,7 +184,7 @@ function judge(status: CameraStatus, exposure: { mean: number; dark: number; bri
         : {
             title: `Jeda rana ${seconds(lagMs)} detik`,
             level: 'warn',
-            detail: `Tamu melihat "Tahan!" sekitar ${seconds(lagMs - 1000)} detik setelah angka 0. Fokus manual (MF) dan lampu mempercepatnya.`,
+            detail: `Tamu melihat "Tahan!" sekitar ${seconds(lagMs - 1000)} detik setelah angka 0. Kunci fokus dan lampu mempercepatnya.`,
           },
     );
   }
@@ -188,55 +192,115 @@ function judge(status: CameraStatus, exposure: { mean: number; dark: number; bri
   return checks;
 }
 
-const STEPS = ['Membaca pengaturan kamera', 'Test shot 1: terang foto & jeda rana', 'Test shot 2: jeda rana', 'Uji autofokus'];
+const STEPS = ['Menyetel kamera', 'Membaca pengaturan kamera', 'Menyesuaikan terang foto', 'Mengukur jeda rana', 'Uji autofokus'];
+/** Test shots spent bringing the brightness into range before settling for what is there. */
+const MAX_EXPOSURE_SHOTS = 3;
+
+/** What the automatic calibration changed, in the operator's words. */
+interface Change {
+  label: string;
+  from: string | null;
+  to: string | null;
+  note?: string;
+  result: AutoSetupStep['result'];
+}
+
+const SETTING_LABEL: Record<keyof CameraSettings, string> = { iso: 'ISO', aperture: 'Bukaan', shutterspeed: 'Kecepatan rana' };
 
 /**
- * Walks through the external camera before an event: reads its settings, takes two test shots
- * (brightness, shutter lag) and a focus test, then says what to change. The measured lag is
- * stored on this device, so the countdown's flash lands on zero from the first guest.
+ * Gets the external camera ready before an event. *Kalibrasi otomatis* first sets the body up
+ * over USB (JPEG, single shot, one-shot AF, no sleep, 3:2, shutter and aperture in range), then
+ * takes test shots and corrects ISO, shutter and aperture until the brightness is right, times
+ * the shutter and tests autofocus. *Cek saja* measures without changing anything. Either way
+ * the checklist says what is left to change on the body, and the measured lag is stored on this
+ * device so the countdown's flash lands on zero from the first guest.
  */
 export default function CameraCalibration() {
   const [step, setStep] = useState<number | null>(null);
   const [checks, setChecks] = useState<Check[] | null>(null);
+  const [changes, setChanges] = useState<Change[] | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const run = async () => {
+  const run = async (auto: boolean) => {
     setError(null);
     setChecks(null);
+    setChanges(null);
     setPreview(null);
+    const made: Change[] = [];
     try {
-      setStep(0);
+      if (auto) {
+        setStep(0);
+        const res = await fetch('/api/camera/calibrate', { method: 'POST' });
+        const data = await readJson<{ steps?: AutoSetupStep[] }>(res);
+        if (!res.ok || !data.steps) throw new Error(data.error ?? 'kamera tidak bisa disetel');
+        for (const s of data.steps) {
+          if (s.result !== 'ok' && s.result !== 'missing') made.push({ label: s.label, from: s.before, to: s.after, note: s.note, result: s.result });
+        }
+        setChanges([...made]);
+      }
+
+      setStep(1);
       const res = await fetch('/api/camera/status', { cache: 'no-store' });
       const data = await readJson<{ status?: CameraStatus }>(res);
       if (!res.ok || !data.status) throw new Error(data.error ?? 'pengaturan kamera tidak terbaca');
-      const status = data.status;
-
-      setStep(1);
-      const first = await fireTestShot();
-      setPreview(first.src);
-      const exposure = await measureExposure(first.src).catch(() => null);
+      let status = data.status;
+      const info = await fetch('/api/camera', { cache: 'no-store' }).then((r) => readJson<Partial<CameraInfo>>(r));
 
       setStep(2);
-      const second = await fireTestShot();
-      const lagMs = (first.lagMs + second.lagMs) / 2;
+      let shot = await fireTestShot();
+      setPreview(shot.src);
+      let exposure = await measureExposure(shot.src).catch(() => null);
+      const lags = [shot.lagMs];
+      for (let i = 1; auto && exposure && info?.choices && i < MAX_EXPOSURE_SHOTS; i++) {
+        const settings: CameraSettings = { iso: status.iso, aperture: status.aperture, shutterspeed: status.shutterspeed };
+        const fix = exposureCorrection(settings, info.choices, status.mode, exposure.mean);
+        if (!fix) break;
+        const applied = await fetch('/api/camera/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(fix.patch),
+        }).then((r) => readJson<{ settings?: CameraSettings }>(r));
+        if (!applied.settings) break;
+        for (const key of Object.keys(fix.patch) as (keyof CameraSettings)[]) {
+          made.push({ label: SETTING_LABEL[key], from: settings[key], to: applied.settings[key], result: 'changed', note: fix.stops > 0 ? 'foto terlalu gelap' : 'foto terlalu terang' });
+        }
+        setChanges([...made]);
+        status = { ...status, ...applied.settings };
+        shot = await fireTestShot();
+        setPreview(shot.src);
+        lags.push(shot.lagMs);
+        exposure = await measureExposure(shot.src).catch(() => null);
+      }
+
+      setStep(3);
+      // The first shot after a restart or a settings change is slow (the body is found and asked
+      // how it fires); with three or more, the fastest two are the honest ones.
+      do lags.push((await fireTestShot()).lagMs);
+      while (lags.length < 3);
+      const fastest = [...lags].sort((a, b) => a - b).slice(0, 2);
+      const lagMs = fastest.reduce((a, b) => a + b, 0) / fastest.length;
       try {
         // The booth screen on this device starts from this instead of guessing.
-        localStorage.setItem(SHUTTER_LAG_KEY, String(Math.round(lagMs)));
+        localStorage.setItem(shutterLagKey(info.focusLocked), String(Math.round(lagMs)));
       } catch {
         // Private mode: the countdown learns it from the first guests instead.
       }
 
-      setStep(3);
-      const focused = await fireTestShot(true).then(
-        () => true,
-        (err: unknown) => {
-          if (err instanceof Error && /focus/i.test(err.message)) return false;
-          throw err;
-        },
-      );
+      // A locked focus is not tested: the test autofocuses, and would move it.
+      let focused: boolean | null = null;
+      if (!info.focusLocked) {
+        setStep(4);
+        focused = await fireTestShot(true).then(
+          () => true,
+          (err: unknown) => {
+            if (err instanceof Error && /focus/i.test(err.message)) return false;
+            throw err;
+          },
+        );
+      }
 
-      setChecks(judge(status, exposure, lagMs, focused));
+      setChecks(judge(status, exposure, lagMs, focused, made.some((c) => c.note === 'foto terlalu gelap' || c.note === 'foto terlalu terang')));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'kalibrasi gagal');
     } finally {
@@ -250,14 +314,33 @@ export default function CameraCalibration() {
     <div className="panel" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
       <span className="mono">KALIBRASI KAMERA EKSTERNAL</span>
       <p className="muted" style={{ fontSize: 13 }}>
-        Arahkan kamera ke titik berdiri tamu (ada orang atau benda di sana), nyalakan lampu acara, lalu mulai. Kamera
-        memotret 3 kali, sekitar 15 detik.
+        Arahkan kamera ke titik berdiri tamu (ada orang atau benda di sana), nyalakan lampu acara, lalu mulai. Kalibrasi
+        otomatis menyetel kamera lewat USB dan memotret 3–5 kali, sekitar 30 detik.
       </p>
-      <button className="pill" onClick={run} disabled={step !== null}>
-        {step !== null ? `${step + 1}/${STEPS.length} · ${STEPS[step]}…` : checks ? 'Kalibrasi ulang' : 'Mulai kalibrasi'}
-      </button>
+      <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <button className="pill" onClick={() => void run(true)} disabled={step !== null} style={{ flex: 1 }}>
+          {step !== null ? `${step + 1}/${STEPS.length} · ${STEPS[step]}…` : checks ? 'Kalibrasi otomatis lagi' : 'Kalibrasi otomatis'}
+        </button>
+        <button className="pill pill-ghost" onClick={() => void run(false)} disabled={step !== null} title="Ukur tanpa mengubah pengaturan kamera">
+          Cek saja
+        </button>
+      </div>
 
       {error && <div className="notice notice-error">{error}</div>}
+
+      {changes && changes.length > 0 && (
+        <ul className="calib-list">
+          {changes.map((c, i) => (
+            <li key={`${c.label}-${i}`} data-level={c.result === 'changed' ? 'ok' : 'warn'}>
+              <b>
+                {c.result === 'changed' ? `${c.label}: ${c.from ?? '?'} → ${c.to ?? '?'}` : `${c.label}: ${c.from ?? 'tidak terbaca'}`}
+              </b>
+              <span>{c.result === 'changed' ? `Disetel otomatis${c.note ? ` (${c.note})` : ''}.` : (c.note ?? 'Tidak bisa disetel lewat USB.')}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {changes && changes.length === 0 && <div className="notice">Pengaturan kamera sudah sesuai; tidak ada yang diubah.</div>}
 
       {checks && (
         <>

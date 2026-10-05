@@ -5,22 +5,18 @@ import { useRouter } from 'next/navigation';
 import GuestHeader from '@/components/guest/GuestHeader';
 import { formatClock, useCountdown, useIdle } from '@/components/guest/hooks';
 import { Check, Phone, Printer, Retry } from '@/components/guest/icons';
+import { formatRetention } from '@/lib/format';
 import { composeLive, type LiveSlot } from '@/lib/strip';
 import type { CustomFrame, PrintMode, Session } from '@/lib/types';
 
 /** Seconds one copy takes in simulated mode, roughly a dye-sub printer. */
 const SECONDS_PER_COPY = 4;
-const FINISH_AFTER_SECONDS = 45;
 /** A guest who walks away before tapping Cetak should not hold the booth forever. */
 const ABANDONED_MS = 3 * 60_000;
 
 /** A 2x6 strip prints two-up on a 4x6 sheet and is cut in half, so two strips cost one sheet. */
 function sheetsFor(session: Session): number {
   return session.format === '2x6' ? Math.ceil(session.prints / 2) : session.prints;
-}
-
-function formatRetention(hours: number): string {
-  return hours >= 48 && hours % 24 === 0 ? `${hours / 24} hari` : `${hours} jam`;
 }
 
 export default function ShareStage({
@@ -35,6 +31,8 @@ export default function ShareStage({
   liveSlots,
   liveUrl: savedLiveUrl,
   frame,
+  settings,
+  showDate,
 }: {
   session: Session;
   stripUrl: string;
@@ -47,6 +45,16 @@ export default function ShareStage({
   liveSlots: LiveSlot[];
   liveUrl: string | null;
   frame: CustomFrame | null;
+  /** Konsol → Pengaturan → Berbagi & galeri. */
+  settings: {
+    /** Back to standby this long after printing. */
+    finishSeconds: number;
+    qr: boolean;
+    galleryChoice: boolean;
+    /** Bitrate of the whole-sheet video; null makes none. */
+    liveBitrate: number | null;
+  };
+  showDate: boolean;
 }) {
   const router = useRouter();
   const sheets = sheetsFor(session);
@@ -57,7 +65,7 @@ export default function ShareStage({
   const simulated = printMode === 'simulated';
   const done = simulated ? printed >= sheets : sentToPrinter;
 
-  const canMakeLive = !savedLiveUrl && liveSlots.some((s) => s.clip);
+  const canMakeLive = !savedLiveUrl && settings.liveBitrate !== null && liveSlots.some((s) => s.clip);
   const [live, setLive] = useState<'idle' | 'making' | 'ready' | 'none'>(savedLiveUrl ? 'ready' : canMakeLive ? 'making' : 'none');
 
   // The live sheet is recorded while the printer works, then uploaded for the QR page and the
@@ -65,15 +73,21 @@ export default function ShareStage({
   useEffect(() => {
     if (!canMakeLive) return;
     let cancelled = false;
-    composeLive(liveSlots, {
-      format: session.format,
-      filterId: session.filter,
-      templateId: session.template,
-      eventName,
-      capturedAt: new Date(session.created_at),
-      frame,
-      mirror: session.mirror,
-    })
+    composeLive(
+      liveSlots,
+      {
+        format: session.format,
+        filterId: session.filter,
+        templateId: session.template,
+        eventName,
+        capturedAt: new Date(session.created_at),
+        frame,
+        mirror: session.mirror,
+        showDate,
+      },
+      undefined,
+      settings.liveBitrate ?? undefined,
+    )
       .then(async (blob) => {
         if (cancelled) return;
         if (!blob) return setLive('none');
@@ -125,7 +139,7 @@ export default function ShareStage({
 
   const finish = () => router.replace('/');
   // Leaving mid-recording would lose the live sheet, so the booth waits the few seconds it takes.
-  const left = useCountdown(FINISH_AFTER_SECONDS, done && !busyMakingLive, finish);
+  const left = useCountdown(settings.finishSeconds, done && !busyMakingLive, finish);
   useIdle(done ? null : ABANDONED_MS, finish);
 
   const printCard = simulated ? (
@@ -189,7 +203,7 @@ export default function ShareStage({
 
             {printCard}
 
-            <div className="sh-card">
+            <div className="sh-card" hidden={!settings.qr}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img className="sh-qr" src={qrDataUrl} alt="QR untuk menyimpan foto ke HP" />
               <div>
@@ -208,7 +222,7 @@ export default function ShareStage({
               </div>
             </div>
 
-            {gallery && (
+            {gallery && settings.galleryChoice && (
               <button className="addon" aria-pressed={inGallery} onClick={toggleGallery} style={{ alignSelf: 'flex-start' }}>
                 <span className="switch" />
                 Tampilkan di galeri acara

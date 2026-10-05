@@ -19,6 +19,8 @@ export interface CameraInfo {
    * preview the same way and guests frame exactly what will be taken.
    */
   stillAspect?: number | null;
+  /** The body keeps one focus for every shot (see `setFocusLock`). */
+  focusLocked?: boolean;
 }
 
 export interface CameraSettings {
@@ -51,6 +53,18 @@ export interface CameraStatus {
   shutterspeed: string | null;
 }
 
+/** One setting the automatic setup looked at, what it found and what it did. */
+export interface AutoSetupStep {
+  key: string;
+  label: string;
+  before: string | null;
+  after: string | null;
+  /** ok: already right · changed: set over USB · manual: must be changed on the body · failed · missing: this body has no such setting. */
+  result: 'ok' | 'changed' | 'manual' | 'failed' | 'missing';
+  /** What to do on the body when it cannot be set over USB. */
+  note?: string;
+}
+
 export interface CaptureOptions {
   /**
    * Fire only once autofocus has locked, and fail if it cannot: the calibration's focus test.
@@ -65,6 +79,11 @@ export interface CaptureResult {
   bytes: number;
 }
 
+export interface LiveViewOptions {
+  /** At most this many frames a second; the body's own rate when higher. */
+  fps?: number;
+}
+
 export interface CameraSource {
   readonly backend: CameraBackend;
   info(): Promise<CameraInfo>;
@@ -77,8 +96,16 @@ export interface CameraSource {
   /** The body's settings for the calibration checklist; backends without a body omit it. */
   status?(): Promise<CameraStatus>;
   /** An MJPEG multipart stream, or null when this backend has no server live view. */
-  liveView(signal: AbortSignal): Promise<ReadableStream<Uint8Array> | null>;
+  liveView(signal: AbortSignal, options?: LiveViewOptions): Promise<ReadableStream<Uint8Array> | null>;
   applySettings(patch: Partial<CameraSettings>): Promise<CameraSettings>;
+  /** Puts the body's settings where a booth needs them, as far as USB allows; bodiless backends omit it. */
+  autoSetup?(): Promise<AutoSetupStep[]>;
+  /**
+   * Locked: focuses once now, at whoever stands at the guests' spot, and every shot after it
+   * fires without autofocus. Unlocked: back to focusing on each shot. Bodies that cannot hold
+   * a focus over USB omit it.
+   */
+  setFocusLock?(locked: boolean): Promise<void>;
 }
 
 export const MJPEG_BOUNDARY = 'snaplorebooth-frame';

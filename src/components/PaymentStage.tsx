@@ -88,12 +88,18 @@ export default function PaymentStage({ session }: { session: Session }) {
   useEffect(() => {
     if (!pending) return;
     const tick = setInterval(() => setNow(Date.now()), 1000);
+    // Over a slow tunnel one answer can take longer than the interval; polls never pile up.
+    let polling = false;
     const poll = setInterval(async () => {
+      if (polling) return;
+      polling = true;
       try {
         const res = await fetch(`/api/sessions/${session.id}/payment`, { cache: 'no-store' });
         if (res.ok) apply((await res.json()) as PaymentResponse);
       } catch {
         // A dropped poll is retried on the next tick; the code on screen stays valid.
+      } finally {
+        polling = false;
       }
     }, POLL_MS);
     return () => {

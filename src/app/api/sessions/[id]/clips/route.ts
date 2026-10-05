@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { getConfig } from '@/lib/config';
 import { getSession, setClip } from '@/lib/db';
 import { sessionUnlocked } from '@/lib/payments';
 import { InvalidImageError, MAX_VIDEO_BYTES, saveVideo } from '@/lib/storage';
@@ -15,6 +16,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const session = getSession(id);
   if (!session) return NextResponse.json({ error: 'session not found' }, { status: 404 });
   if (!sessionUnlocked(id)) return NextResponse.json({ error: 'session is not paid' }, { status: 402 });
+  // The sheet is printed and its QR handed out; its photos no longer change.
+  if (session.strip_file) return NextResponse.json({ error: 'sheet already made' }, { status: 409 });
+
+  if (!getConfig().capture.clips) return NextResponse.json({ error: 'video is switched off' }, { status: 409 });
 
   const index = Number(new URL(request.url).searchParams.get('index'));
   if (!Number.isInteger(index) || index < 1 || index > session.shots) {

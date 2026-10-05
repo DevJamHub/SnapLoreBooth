@@ -28,6 +28,7 @@ export async function POST(request: Request) {
   try {
     const frame = await saveFrame({
       name: String(form.get('name') ?? ''),
+      theme: String(form.get('theme') ?? ''),
       format: String(form.get('format') ?? ''),
       slots,
       bytes: new Uint8Array(await file.arrayBuffer()),

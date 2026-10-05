@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { BoothStatus, Payment, Photo, Session, SessionStatus } from './types';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
+export const DATA_DIR = path.join(process.cwd(), 'data');
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 /** Operator-uploaded frame PNGs. Not guest data, so retention and "hapus foto tamu" leave them. */
 export const FRAME_DIR = path.join(DATA_DIR, 'frames');
@@ -16,8 +16,14 @@ const globalForDb = globalThis as unknown as { __boothDb?: Database.Database };
 
 function open(): Database.Database {
   const db = new Database(path.join(DATA_DIR, 'booth.db'));
-  db.pragma('journal_mode = WAL');
-  db.exec(`
+  useWal(db);
+  // `next build` opens the database from several workers at once. Schema changes run in one
+  // IMMEDIATE transaction: it takes the write lock before reading anything, so the others wait
+  // for it and then find everything there. Plain statements would each read first and then
+  // ask for the write lock, and two doing that at once fail at once (SQLITE_BUSY) instead of
+  // waiting, since neither could ever get it.
+  db.transaction(() => {
+    db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id            TEXT PRIMARY KEY,
       created_at    TEXT NOT NULL,
@@ -66,6 +72,10 @@ function open(): Database.Database {
       print_mode   TEXT NOT NULL DEFAULT 'simulated',
       prices       TEXT NOT NULL DEFAULT '{}'
     );
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS frames (
       id         TEXT PRIMARY KEY,
       name       TEXT NOT NULL,
@@ -74,10 +84,7 @@ function open(): Database.Database {
       slots      TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
-  `);
-  // `next build` opens the database from several workers at once. An IMMEDIATE transaction
-  // takes the write lock before checking, so the others wait and then find the column there.
-  db.transaction(() => {
+    `);
     addColumn(db, 'sessions', 'event_id', 'event_id TEXT');
     addColumn(db, 'sessions', 'requires_payment', 'requires_payment INTEGER NOT NULL DEFAULT 1');
     addColumn(db, 'sessions', 'in_gallery', 'in_gallery INTEGER NOT NULL DEFAULT 1');
@@ -86,9 +93,37 @@ function open(): Database.Database {
     addColumn(db, 'events', 'ended_at', 'ended_at TEXT');
     addColumn(db, 'sessions', 'mirror', 'mirror INTEGER NOT NULL DEFAULT 0');
     addColumn(db, 'events', 'mirror', 'mirror INTEGER NOT NULL DEFAULT 0');
+    addColumn(db, 'sessions', 'beauty', "beauty TEXT NOT NULL DEFAULT 'off'");
+    addColumn(db, 'frames', 'theme', "theme TEXT NOT NULL DEFAULT ''");
+    addColumn(db, 'sessions', 'reprints', 'reprints INTEGER NOT NULL DEFAULT 0');
+    addColumn(db, 'frames', 'hidden', 'hidden INTEGER NOT NULL DEFAULT 0');
+    // Guests now switch the mirror themselves, starting mirrored. Done once, so an operator
+    // who turns the default off afterwards keeps it off.
+    const mirrorDefault = db.prepare(`SELECT 1 FROM settings WHERE key = 'migration.mirror_default_on'`).get();
+    if (!mirrorDefault) {
+      db.exec(`UPDATE events SET mirror = 1 WHERE ended_at IS NULL`);
+      db.exec(`INSERT OR IGNORE INTO settings (key, value) VALUES ('migration.mirror_default_on', '1')`);
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_event ON sessions(event_id, created_at DESC)');
   }).immediate();
-  db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_event ON sessions(event_id, created_at DESC)');
   return db;
+}
+
+/**
+ * Write-ahead logging lets screens read while a photo is being saved. Switching a new file to
+ * it needs the file to itself, which another build worker may hold for a moment: then it waits
+ * and tries again. Once switched the file stays in WAL, and asking again costs nothing.
+ */
+function useWal(db: Database.Database) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      db.pragma('journal_mode = WAL');
+      return;
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'SQLITE_BUSY' || attempt >= 50) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
 }
 
 /** SQLite has no ADD COLUMN IF NOT EXISTS; booths upgraded in place keep their data. */
@@ -142,10 +177,14 @@ export function createSession(input: {
   eventId: string;
   requiresPayment: boolean;
   mirror: boolean;
+  /** The look and beauty Gaya opens on, and whether the sheet joins the gallery unasked. */
+  filter: string;
+  beauty: string;
+  inGallery: boolean;
 }): Session {
   db.prepare(
-    `INSERT INTO sessions (id, created_at, package_id, package_label, format, shots, price_idr, addons, prints, event_id, requires_payment, mirror)
-     VALUES (@id, @created_at, @package_id, @package_label, @format, @shots, @price_idr, @addons, @prints, @event_id, @requires_payment, @mirror)`,
+    `INSERT INTO sessions (id, created_at, package_id, package_label, format, shots, price_idr, addons, prints, event_id, requires_payment, mirror, filter, beauty, in_gallery)
+     VALUES (@id, @created_at, @package_id, @package_label, @format, @shots, @price_idr, @addons, @prints, @event_id, @requires_payment, @mirror, @filter, @beauty, @in_gallery)`,
   ).run({
     id: input.id,
     created_at: new Date().toISOString(),
@@ -159,6 +198,9 @@ export function createSession(input: {
     event_id: input.eventId,
     requires_payment: input.requiresPayment ? 1 : 0,
     mirror: input.mirror ? 1 : 0,
+    filter: input.filter,
+    beauty: input.beauty,
+    in_gallery: input.inGallery ? 1 : 0,
   });
   return getSession(input.id)!;
 }
@@ -172,9 +214,73 @@ export function listSessions(limit = 50): Session[] {
   return rows.map((r) => hydrate(r)!);
 }
 
+/** One line of the operator's log: when, which guest, and what they paid. */
+export interface SessionLogRow {
+  id: string;
+  created_at: string;
+  status: SessionStatus;
+  /** The sheet is made, so it can be printed again. */
+  done: boolean;
+  price_idr: number;
+  requires_payment: boolean;
+  paid: boolean;
+  in_gallery: boolean;
+}
+
+/** The newest sessions, or those whose code contains `search` (any case). */
+export function sessionLog(limit = 60, search = ''): SessionLogRow[] {
+  const code = search.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const rows = db
+    .prepare(
+      `SELECT s.id, s.created_at, s.status, s.price_idr, s.requires_payment, s.in_gallery, (s.strip_file IS NOT NULL) AS done,
+              EXISTS (SELECT 1 FROM payments p WHERE p.session_id = s.id AND p.status = 'paid') AS paid
+       FROM sessions s WHERE s.id LIKE ? ORDER BY s.created_at DESC LIMIT ?`,
+    )
+    .all(`%${code}%`, limit) as (Omit<SessionLogRow, 'requires_payment' | 'paid' | 'in_gallery' | 'done'> & {
+    requires_payment: number;
+    paid: number;
+    in_gallery: number;
+    done: number;
+  })[];
+  return rows.map((r) => ({ ...r, requires_payment: r.requires_payment === 1, paid: r.paid === 1, in_gallery: r.in_gallery === 1, done: r.done === 1 }));
+}
+
+/**
+ * A session the guest backed out of before paying or shooting (Ganti paket): nothing to keep,
+ * and it would only inflate the day's count. Anything with a photo, a sheet or a QR stays.
+ */
+export function discardSession(id: string): boolean {
+  return (
+    db
+      .prepare(
+        `DELETE FROM sessions WHERE id = ? AND strip_file IS NULL
+           AND NOT EXISTS (SELECT 1 FROM photos p WHERE p.session_id = sessions.id)
+           AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.session_id = sessions.id)`,
+      )
+      .run(id).changes > 0
+  );
+}
+
+/** Shows or hides many sessions in their event's gallery at once; returns how many changed. */
+export function setInGallery(ids: string[], inGallery: boolean): number {
+  const update = db.prepare('UPDATE sessions SET in_gallery = ? WHERE id = ?');
+  return db.transaction(() => ids.reduce((n, id) => n + update.run(inGallery ? 1 : 0, id).changes, 0))();
+}
+
+/** Sessions per event, for the console's list of past events. */
+export function sessionCounts(): Map<string, number> {
+  const rows = db.prepare('SELECT event_id, COUNT(*) AS n FROM sessions WHERE event_id IS NOT NULL GROUP BY event_id').all() as {
+    event_id: string;
+    n: number;
+  }[];
+  return new Map(rows.map((r) => [r.event_id, r.n]));
+}
+
 export function updateSession(
   id: string,
-  patch: Partial<Pick<Session, 'status' | 'filter' | 'template' | 'prints' | 'delivered_to' | 'strip_file' | 'in_gallery' | 'live_file'>>,
+  patch: Partial<
+    Pick<Session, 'status' | 'filter' | 'template' | 'prints' | 'delivered_to' | 'strip_file' | 'in_gallery' | 'live_file' | 'mirror' | 'beauty'>
+  >,
 ): Session | null {
   const fields = Object.keys(patch) as (keyof typeof patch)[];
   if (fields.length === 0) return getSession(id);
@@ -245,6 +351,25 @@ export function isSessionPaid(sessionId: string): boolean {
   return db.prepare(`SELECT 1 FROM payments WHERE session_id = ? AND status = 'paid' LIMIT 1`).get(sessionId) !== undefined;
 }
 
+/**
+ * The guest paid the operator in cash (QRIS failed, or no signal). Recorded as a settled
+ * payment like any other, so the booth screen polling it moves on and the revenue counts it.
+ */
+export function recordCashPayment(sessionId: string, amountIdr: number): Payment {
+  const now = new Date().toISOString();
+  const id = `TUNAI-${sessionId}-${Date.now().toString(36)}`;
+  db.prepare(
+    `INSERT INTO payments (id, session_id, amount_idr, qr_string, status, expires_at, created_at, paid_at, provider_payment_id)
+     VALUES (?, ?, ?, '', 'paid', ?, ?, ?, 'TUNAI')`,
+  ).run(id, sessionId, amountIdr, now, now, now);
+  return getPayment(id)!;
+}
+
+/** Sheets printed again from the console; the paper count includes them. */
+export function addReprints(sessionId: string, copies: number): boolean {
+  return db.prepare('UPDATE sessions SET reprints = reprints + ? WHERE id = ?').run(copies, sessionId).changes > 0;
+}
+
 /** Idempotent: the webhook and the kiosk's poll may both report the same payment. */
 export function markPaymentPaid(id: string, providerPaymentId: string): Payment | null {
   db.prepare(
@@ -253,7 +378,24 @@ export function markPaymentPaid(id: string, providerPaymentId: string): Payment 
   return getPayment(id);
 }
 
+/** Assumed until the operator records a refill: then the count runs from what they loaded. */
 const PAPER_ROLL_CAPACITY = 400;
+
+/** Booth-wide settings that belong to the hardware, not to an event: printer, paper. */
+export function getSetting(key: string): string | null {
+  return (db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined)?.value ?? null;
+}
+
+export function setSetting(key: string, value: string | null) {
+  if (value === null) db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+  else db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, value);
+}
+
+/** The operator loaded `sheets` sheets just now; the paper count starts again from there. */
+export function recordPaperRefill(sheets: number) {
+  setSetting('paper.capacity', String(sheets));
+  setSetting('paper.loaded_at', new Date().toISOString());
+}
 
 function startOfToday(): string {
   const start = new Date();
@@ -276,12 +418,18 @@ export function boothStatus(): BoothStatus {
   const today = startOfToday();
 
   const printsToday =
-    (db.prepare(`SELECT COALESCE(SUM(prints), 0) AS n FROM sessions WHERE created_at >= ? AND status IN ('printing','done')`).get(today) as { n: number }).n;
+    (db.prepare(`SELECT COALESCE(SUM(prints + reprints), 0) AS n FROM sessions WHERE created_at >= ? AND status IN ('printing','done')`).get(today) as { n: number }).n;
   const sessionsToday =
     (db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE created_at >= ?').get(today) as { n: number }).n;
 
-  const remaining = Math.max(PAPER_ROLL_CAPACITY - printsToday, 0);
-  const paperPercent = Math.round((remaining / PAPER_ROLL_CAPACITY) * 100);
+  // Since the last refill when one was recorded; otherwise today's prints against a full roll.
+  const loadedAt = getSetting('paper.loaded_at');
+  const capacity = Number(getSetting('paper.capacity')) || PAPER_ROLL_CAPACITY;
+  const printsSinceRefill = loadedAt
+    ? (db.prepare(`SELECT COALESCE(SUM(prints + reprints), 0) AS n FROM sessions WHERE created_at >= ? AND status IN ('printing','done')`).get(loadedAt) as { n: number }).n
+    : printsToday;
+  const remaining = Math.max(capacity - printsSinceRefill, 0);
+  const paperPercent = Math.round((remaining / capacity) * 100);
 
   const spoolSince = new Date(Date.now() - SPOOL_WINDOW_MS).toISOString();
   const spooling =
@@ -292,6 +440,8 @@ export function boothStatus(): BoothStatus {
     prints_today: printsToday,
     prints_remaining: remaining,
     sessions_today: sessionsToday,
+    paper_capacity: capacity,
+    paper_loaded_at: loadedAt,
     printer: spooling ? 'spooling' : paperPercent < 15 ? 'low_media' : 'ready',
   };
 }
