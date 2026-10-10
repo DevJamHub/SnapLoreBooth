@@ -7,6 +7,8 @@ const PAGES = [
   { id: 'frame', label: 'Frame', href: '/operator/frame' },
   { id: 'kamera', label: 'Kamera', href: '/operator/camera' },
   { id: 'pengaturan', label: 'Pengaturan', href: '/operator/pengaturan' },
+  // Wide tables are no use on a phone, and its tab bar has no room for a seventh tab.
+  { id: 'data', label: 'Data', href: '/operator/data', wide: true },
   { id: 'sistem', label: 'Sistem', href: '/operator/sistem' },
 ] as const;
 
@@ -22,7 +24,12 @@ export default function OperatorHeader({ active, children }: { active: (typeof P
       </div>
       <nav className="op-nav" aria-label="Halaman operator">
         {PAGES.map((page) => (
-          <Link key={page.id} href={page.href} aria-current={page.id === active ? 'page' : undefined}>
+          <Link
+            key={page.id}
+            href={page.href}
+            aria-current={page.id === active ? 'page' : undefined}
+            data-wide={'wide' in page ? 'true' : undefined}
+          >
             {page.label}
           </Link>
         ))}

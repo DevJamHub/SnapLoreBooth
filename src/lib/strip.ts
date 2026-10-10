@@ -1,6 +1,12 @@
+import { backgroundById, type BoothBackground } from './backgrounds';
 import { applyBeauty } from './beauty';
-import { FILTERS, TEMPLATES, beautyLevel, filterCss, type BeautyLevel, type FilterOp } from './packages';
+import { drawDecor, loadDecorFonts, type DecorItem } from './decor';
+import { dateLocale, type Lang } from './i18n';
+import { boardLayout, type BoardLayout, type Rect } from './layout';
+import { FILTERS, TEMPLATES, beautyLevel, filterCss, filterFx, type BeautyLevel, type FilterFx, type FilterOp } from './packages';
 import type { CustomFrame } from './types';
+
+export { boardLayout, sheetSize, slotAspect, type BoardLayout, type Rect } from './layout';
 
 export interface StripOptions {
   format: string;
@@ -16,79 +22,39 @@ export interface StripOptions {
   beauty?: string;
   /** Built-in frames print the date under the event name unless this is false. */
   showDate?: boolean;
+  /** A QR code image (data URL) to the guest's photos, printed in a built-in frame's footer. */
+  qr?: string | null;
+  /** The guest's stickers, writing and doodles, drawn over everything. */
+  decor?: DecorItem[] | null;
+  /** A backdrop put behind the people in each photo (lib/backgrounds.ts); stills only. */
+  background?: string | null;
+  /** The guest's language, for the date a built-in frame prints. */
+  lang?: Lang;
 }
 
-export interface Rect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  /** Degrees clockwise about the centre. Uploaded frames can hold tilted photos. */
-  angle?: number;
+/** A photo's people (the mask, in the photo's own shape) and the backdrop to put behind them. */
+interface Backdrop {
+  mask: HTMLCanvasElement;
+  background: BoothBackground;
 }
 
-export interface BoardLayout {
-  width: number;
-  height: number;
-  slots: Rect[];
-  /** Where the event name and date go; null when the frame prints neither. */
-  footer: Rect | null;
+/** Puts `backdrop` behind the people in a photo already cut to its slot. */
+function replaceBackdrop(base: HTMLCanvasElement, { mask, background }: Backdrop) {
+  const { width: w, height: h } = base;
+  const people = document.createElement('canvas');
+  people.width = w;
+  people.height = h;
+  const p = people.getContext('2d')!;
+  p.drawImage(base, 0, 0);
+  // The mask has the photo's shape, so the same cover crop lines it up with the cut photo.
+  p.globalCompositeOperation = 'destination-in';
+  drawCover(p, mask, 0, 0, w, h);
+  const ctx = base.getContext('2d')!;
+  ctx.clearRect(0, 0, w, h);
+  background.draw(ctx, w, h);
+  ctx.drawImage(people, 0, 0);
 }
 
-/** 4R (4x6in) at 300dpi — every current package prints on one of these. */
-const SHEET = { width: 1200, height: 1800 };
-
-function grid(cols: number, rows: number, margin: number, gap: number, footer: number, size = SHEET): BoardLayout {
-  const innerW = size.width - margin * 2;
-  const innerH = size.height - margin * 2 - footer;
-  const w = (innerW - gap * (cols - 1)) / cols;
-  const h = (innerH - gap * (rows - 1)) / rows;
-  const slots: Rect[] = [];
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      slots.push({ x: Math.round(margin + c * (w + gap)), y: Math.round(margin + r * (h + gap)), w: Math.round(w), h: Math.round(h) });
-    }
-  }
-  const footerRect = footer > 0 ? { x: margin, y: size.height - margin - footer, w: innerW, h: footer } : null;
-  return { ...size, slots, footer: footerRect };
-}
-
-/**
- * Where every photo sits on the sheet. The capture screen sizes its viewfinder from the
- * same slots, so what the guest frames is exactly what prints.
- */
-export function boardLayout(format: string, templateId: string, shots = 1, frame?: CustomFrame | null): BoardLayout {
-  // An uploaded frame brings its own holes and prints its own text.
-  if (frame && frame.id === templateId && frame.format === format) return { ...SHEET, slots: frame.slots, footer: null };
-
-  const template = TEMPLATES.find((t) => t.id === templateId) ?? TEMPLATES[0];
-  const footer = template.eventMark || template.date ? 180 : 0;
-  const margin = Math.round(52 * template.border);
-
-  switch (format) {
-    case 'grid6':
-      return grid(2, 3, margin, 20, footer);
-    case 'grid4':
-      return grid(2, 2, margin, 20, footer);
-    case 'stack3':
-      return grid(1, 3, margin, 22, footer);
-    case 'single':
-      return grid(1, 1, margin, 0, footer);
-    // Boards from before the 4R-only packages, kept so old sessions still render.
-    case '2x6':
-      return grid(1, shots, Math.round(36 * template.border), 18, footer ? 170 : 0, { width: 600, height: 1800 });
-    case '1x1':
-      return grid(1, 1, margin, 0, footer ? 150 : 0, { width: 1200, height: 1200 });
-    default:
-      return grid(1, Math.max(shots, 1), margin, 22, footer);
-  }
-}
-
-/** Width over height of one photo slot, for sizing the viewfinder. */
-export function slotAspect(format: string, templateId: string): number {
-  const slot = boardLayout(format, templateId).slots[0];
-  return slot.w / slot.h;
-}
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -217,6 +183,69 @@ function applyOps(data: Uint8ClampedArray, ops: FilterOp[]) {
   }
 }
 
+let grainTile: HTMLCanvasElement | null = null;
+
+/** Mid-grey noise; laid on with "overlay" it darkens and lightens a photo by turns, like film. */
+function grainPattern(): HTMLCanvasElement {
+  if (grainTile) return grainTile;
+  const size = 160;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const noise = ctx.createImageData(size, size);
+  for (let i = 0; i < noise.data.length; i += 4) {
+    const v = 128 + (Math.random() - 0.5) * 230;
+    noise.data[i] = v;
+    noise.data[i + 1] = v;
+    noise.data[i + 2] = v;
+    noise.data[i + 3] = 255;
+  }
+  ctx.putImageData(noise, 0, 0);
+  return (grainTile = canvas);
+}
+
+/** A look's textures over one photo, in the slot's own box (0,0)-(w,h). */
+function drawFx(ctx: CanvasRenderingContext2D, fx: FilterFx[], w: number, h: number) {
+  if (fx.length === 0) return;
+  ctx.save();
+  if ('filter' in ctx) ctx.filter = 'none';
+  if (fx.includes('leak')) {
+    // Warm light spilling in from one corner, and a fainter one from the opposite edge.
+    ctx.globalCompositeOperation = 'screen';
+    const reach = Math.max(w, h);
+    const warm = ctx.createRadialGradient(0, 0, 0, 0, 0, reach * 0.85);
+    warm.addColorStop(0, 'rgba(255, 150, 70, 0.7)');
+    warm.addColorStop(0.4, 'rgba(255, 90, 90, 0.22)');
+    warm.addColorStop(1, 'rgba(255, 90, 90, 0)');
+    ctx.fillStyle = warm;
+    ctx.fillRect(0, 0, w, h);
+    const glow = ctx.createRadialGradient(w, h * 0.8, 0, w, h * 0.8, reach * 0.5);
+    glow.addColorStop(0, 'rgba(255, 210, 120, 0.35)');
+    glow.addColorStop(1, 'rgba(255, 210, 120, 0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, w, h);
+  }
+  if (fx.includes('vignette')) {
+    ctx.globalCompositeOperation = 'source-over';
+    const shade = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.32, w / 2, h / 2, Math.hypot(w, h) * 0.55);
+    shade.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    shade.addColorStop(1, 'rgba(0, 0, 0, 0.5)');
+    ctx.fillStyle = shade;
+    ctx.fillRect(0, 0, w, h);
+  }
+  if (fx.includes('grain')) {
+    const pattern = ctx.createPattern(grainPattern(), 'repeat');
+    if (pattern) {
+      ctx.globalCompositeOperation = 'overlay';
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = pattern;
+      ctx.fillRect(0, 0, w, h);
+    }
+  }
+  ctx.restore();
+}
+
 /**
  * Smoothed photos, cut to their slot. The Gaya screen recomposes the sheet on every tap and
  * the look changes far more often than the smoothing, so the smoothing is done once.
@@ -229,10 +258,17 @@ const SMOOTHED_KEPT = 16;
  * the smoothing, and the look on browsers without canvas filters. Done on the cut photo, so a
  * tilted slot never touches a neighbour it overlaps.
  */
-function slotPicture(img: Drawable, src: string | null, slot: Rect, beauty: BeautyLevel | null, ops: FilterOp[] | null): HTMLCanvasElement {
+function slotPicture(
+  img: Drawable,
+  src: string | null,
+  slot: Rect,
+  beauty: BeautyLevel | null,
+  ops: FilterOp[] | null,
+  backdrop: Backdrop | null = null,
+): HTMLCanvasElement {
   const w = Math.round(slot.w);
   const h = Math.round(slot.h);
-  const key = beauty && src ? `${beauty.id}|${w}x${h}|${src}` : null;
+  const key = (beauty || backdrop) && src ? `${beauty?.id ?? '-'}|${backdrop?.background.id ?? '-'}|${w}x${h}|${src}` : null;
   let base = key ? smoothed.get(key) : undefined;
   if (!base) {
     base = document.createElement('canvas');
@@ -245,6 +281,7 @@ function slotPicture(img: Drawable, src: string | null, slot: Rect, beauty: Beau
       applyBeauty(pixels, beauty);
       ctx.putImageData(pixels, 0, 0);
     }
+    if (backdrop) replaceBackdrop(base, backdrop);
     if (key) {
       smoothed.set(key, base);
       if (smoothed.size > SMOOTHED_KEPT) smoothed.delete(smoothed.keys().next().value!);
@@ -290,8 +327,8 @@ function enterSlot(ctx: CanvasRenderingContext2D, slot: Rect, mirror = false) {
   }
 }
 
-/** The sheet without photos: board colour, event name and date. Shared by stills and video. */
-function drawBoardBase(ctx: CanvasRenderingContext2D, layout: BoardLayout, options: StripOptions) {
+/** The sheet without photos: board colour, event name, date and QR. Shared by stills and video. */
+function drawBoardBase(ctx: CanvasRenderingContext2D, layout: BoardLayout, options: StripOptions, qr: HTMLImageElement | null = null) {
   // An uploaded frame covers the whole sheet; white only shows through a hole left unfilled.
   if (frameOf(options)) {
     ctx.fillStyle = '#ffffff';
@@ -304,25 +341,52 @@ function drawBoardBase(ctx: CanvasRenderingContext2D, layout: BoardLayout, optio
 
   if (layout.footer) {
     const { x, y, w, h } = layout.footer;
+    let textX = x;
+    let textW = w;
+    if (qr) {
+      // The code sits at the footer's right on a white square, so it scans on a dark board too.
+      const size = Math.round(Math.min(h * 0.8, w * 0.24));
+      const pad = Math.round(size * 0.08);
+      const qx = x + w - size - pad;
+      const qy = y + (h - size) / 2;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(qx - pad, qy - pad, size + pad * 2, size + pad * 2);
+      ctx.drawImage(qr, qx, qy, size, size);
+      // A full sheet keeps its words centred; a strip has no room either side, so they move over.
+      const reserve = size + pad * 3;
+      if (layout.width >= 1000) {
+        textX = x + reserve;
+        textW = w - reserve * 2;
+      } else {
+        textW = w - reserve;
+      }
+    }
+
     ctx.textBaseline = 'top';
     ctx.textAlign = 'center';
-    const centre = x + w / 2;
+    const centre = textX + textW / 2;
     let cursor = y + h * 0.24;
 
     if (template.eventMark) {
       ctx.fillStyle = template.ink;
       ctx.font = `500 ${Math.round(layout.width * 0.056)}px Georgia, serif`;
-      ctx.fillText(options.eventName.slice(0, 32), centre, cursor, w);
+      ctx.fillText(options.eventName.slice(0, 32), centre, cursor, textW);
       cursor += Math.round(layout.width * 0.08);
     }
 
     if (template.date && options.showDate !== false) {
       ctx.fillStyle = template.muted;
       ctx.font = `400 ${Math.round(layout.width * 0.026)}px ui-monospace, monospace`;
-      const stamp = options.capturedAt.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
-      ctx.fillText(stamp.toUpperCase(), centre, cursor, w);
+      const stamp = options.capturedAt.toLocaleDateString(dateLocale(options.lang ?? 'id'), { day: 'numeric', month: 'long', year: 'numeric' });
+      ctx.fillText(stamp.toUpperCase(), centre, cursor, textW);
     }
   }
+}
+
+/** The QR image for a built-in frame's footer; an uploaded frame prints its own design only. */
+function qrFor(options: StripOptions): Promise<HTMLImageElement | null> {
+  if (!options.qr || frameOf(options)) return Promise.resolve(null);
+  return cachedImage(options.qr).catch(() => null);
 }
 
 /**
@@ -331,12 +395,25 @@ function drawBoardBase(ctx: CanvasRenderingContext2D, layout: BoardLayout, optio
  */
 export async function composeStrip(sources: (string | null)[], options: StripOptions, quality = 0.92): Promise<string> {
   const frame = frameOf(options);
-  const [images, overlay] = await Promise.all([
+  const [images, overlay, qr] = await Promise.all([
     Promise.all(sources.map((src, i): Promise<Drawable> => (src ? cachedImage(src) : Promise.resolve(placeholderCanvas(i))))),
     frame ? cachedImage(frame.src) : Promise.resolve(null),
+    qrFor(options),
+    options.decor?.length ? loadDecorFonts(options.decor) : null,
   ]);
   const ops = FILTERS.find((f) => f.id === options.filterId)?.ops ?? [];
+  const fx = filterFx(options.filterId);
   const layout = boardLayout(options.format, options.templateId, images.length, frame);
+  // Backdrops need each photo's people found first (on the device; the first one loads the model).
+  const background = backgroundById(options.background ?? undefined);
+  const masks = background
+    ? await Promise.all(
+        sources.map((src, i) => {
+          const img = images[i];
+          return src && img instanceof HTMLImageElement ? import('./segment').then(({ personMask }) => personMask(src, img)) : null;
+        }),
+      )
+    : [];
 
   const canvas = document.createElement('canvas');
   canvas.width = layout.width;
@@ -344,7 +421,7 @@ export async function composeStrip(sources: (string | null)[], options: StripOpt
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Browser ini tidak bisa menyusun foto');
 
-  drawBoardBase(ctx, layout, options);
+  drawBoardBase(ctx, layout, options, qr);
 
   const nativeFilter = ops.length > 0 && supportsCanvasFilter();
   const beauty = beautyLevel(options.beauty);
@@ -355,15 +432,20 @@ export async function composeStrip(sources: (string | null)[], options: StripOpt
     const src = sources[i] ?? null;
     const slotBeauty = src ? beauty : null;
     const pixelOps = ops.length > 0 && !nativeFilter ? ops : null;
-    const picture: Drawable = slotBeauty || pixelOps ? slotPicture(img, src, slot, slotBeauty, pixelOps) : img;
+    const mask = masks[i];
+    const backdrop = background && mask ? { mask, background } : null;
+    const picture: Drawable = slotBeauty || pixelOps || backdrop ? slotPicture(img, src, slot, slotBeauty, pixelOps, backdrop) : img;
 
     enterSlot(ctx, slot, options.mirror);
     if (nativeFilter) ctx.filter = filterCss(options.filterId);
     drawCover(ctx, picture, 0, 0, slot.w, slot.h);
+    // Stand-ins stay plain: textures only make sense on a photo.
+    if (src) drawFx(ctx, fx, slot.w, slot.h);
     ctx.restore();
   });
 
   if (overlay) ctx.drawImage(overlay, 0, 0, layout.width, layout.height);
+  if (options.decor?.length) drawDecor(ctx, options.decor, options.eventName);
 
   return canvas.toDataURL('image/jpeg', quality);
 }
@@ -385,7 +467,7 @@ export async function liveBoard(options: StripOptions, shots: number): Promise<L
   const base = document.createElement('canvas');
   base.width = layout.width;
   base.height = layout.height;
-  drawBoardBase(base.getContext('2d')!, layout, options);
+  drawBoardBase(base.getContext('2d')!, layout, options, await qrFor(options));
   const overlay = frame ? await cachedImage(frame.src) : null;
   const standIns = layout.slots.map((slot, i) => placeholderCanvas(i, Math.round(slot.w / 2), Math.round(slot.h / 2)));
 
@@ -460,11 +542,20 @@ export async function composeLive(slots: LiveSlot[], options: StripOptions, scal
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
 
-  // The frame itself never changes, so it is drawn once and stamped under every video frame.
+  // The frame itself never changes, so it is drawn once and stamped under every video frame;
+  // the guest's stickers and doodles likewise, over every frame.
   const base = document.createElement('canvas');
   base.width = layout.width;
   base.height = layout.height;
-  drawBoardBase(base.getContext('2d')!, layout, options);
+  drawBoardBase(base.getContext('2d')!, layout, options, await qrFor(options));
+  let decorLayer: HTMLCanvasElement | null = null;
+  if (options.decor?.length) {
+    await loadDecorFonts(options.decor);
+    decorLayer = document.createElement('canvas');
+    decorLayer.width = layout.width;
+    decorLayer.height = layout.height;
+    drawDecor(decorLayer.getContext('2d')!, options.decor, options.eventName);
+  }
 
   const holder = document.createElement('div');
   holder.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0.01;overflow:hidden;pointer-events:none;';
@@ -482,6 +573,7 @@ export async function composeLive(slots: LiveSlot[], options: StripOptions, scal
 
     const filter = filterCss(options.filterId);
     const useFilter = filter !== 'none' && supportsCanvasFilter();
+    const fx = filterFx(options.filterId);
     const seconds = Math.max(...videos.map((v) => (Number.isFinite(v.duration) && v.duration > 0 ? v.duration : LIVE_FALLBACK_SECONDS)));
 
     videos.forEach((v) => (v.currentTime = 0));
@@ -501,9 +593,11 @@ export async function composeLive(slots: LiveSlot[], options: StripOptions, scal
         enterSlot(ctx, slot, options.mirror);
         if (useFilter) ctx.filter = filter;
         drawCover(ctx, src, 0, 0, slot.w, slot.h);
+        drawFx(ctx, fx, slot.w, slot.h);
         ctx.restore();
       });
       if (overlay) ctx.drawImage(overlay, 0, 0, layout.width, layout.height);
+      if (decorLayer) ctx.drawImage(decorLayer, 0, 0);
     };
 
     draw();

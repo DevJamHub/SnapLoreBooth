@@ -4,6 +4,7 @@ import { getConfig } from '@/lib/config';
 import { addPhoto, getSession, listPhotos } from '@/lib/db';
 import { sessionUnlocked } from '@/lib/payments';
 import { mirrorFile, optimizeStill } from '@/lib/storage';
+import { shotCount } from '@/lib/picks';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,8 +26,9 @@ export async function POST(request: Request) {
   if (session.strip_file) return NextResponse.json({ error: 'sheet already made' }, { status: 409 });
 
   const index = Number(body.index);
-  if (!Number.isInteger(index) || index < 1 || index > session.shots) {
-    return NextResponse.json({ error: `index must be an integer between 1 and ${session.shots}` }, { status: 400 });
+  // The sheet's photos and any bonus ones to pick from.
+  if (!Number.isInteger(index) || index < 1 || index > shotCount(session)) {
+    return NextResponse.json({ error: `index must be an integer between 1 and ${shotCount(session)}` }, { status: 400 });
   }
 
   // The reply is a short event stream: "fired" the moment the shutter goes, so the kiosk can

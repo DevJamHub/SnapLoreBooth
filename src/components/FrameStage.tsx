@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import GuestHeader from '@/components/guest/GuestHeader';
+import { useLang, useT } from '@/components/guest/lang';
 import { formatClock, useCountdown } from '@/components/guest/hooks';
 import { ArrowLeft, ArrowRight } from '@/components/guest/icons';
 import { useCameraPreview } from '@/components/guest/useCameraPreview';
@@ -65,6 +66,7 @@ export default function FrameStage({
   livePreview,
   showDate,
   builtin,
+  qr,
 }: {
   session: Session;
   payments: boolean;
@@ -77,8 +79,12 @@ export default function FrameStage({
   showDate: boolean;
   /** Offer the built-in frames too (they are offered anyway when nothing else is). */
   builtin: boolean;
+  /** The code a built-in frame prints in its footer; null prints none. */
+  qr: string | null;
 }) {
   const router = useRouter();
+  const t = useT();
+  const lang = useLang();
   const themes = useMemo(() => themesFor(frames, builtin), [frames, builtin]);
   const [template, setTemplate] = useState(() => initialTemplate(session, themes));
   const [themeName, setThemeName] = useState(() => themes.find((t) => t.choices.some((c) => c.id === template))?.name ?? themes[0].name);
@@ -99,7 +105,7 @@ export default function FrameStage({
     let cancelled = false;
     setBoardFailed(false);
     liveBoard(
-      { format: session.format, filterId: 'original', templateId: template, eventName, capturedAt: new Date(), frame, mirror: session.mirror, showDate },
+      { format: session.format, filterId: 'original', templateId: template, eventName, capturedAt: new Date(), frame, mirror: session.mirror, showDate, qr, lang },
       session.shots,
     )
       .then((next) => !cancelled && setBoard(next))
@@ -107,7 +113,7 @@ export default function FrameStage({
     return () => {
       cancelled = true;
     };
-  }, [template, frame, eventName, session.format, session.shots, session.mirror, showDate]);
+  }, [template, frame, eventName, session.format, session.shots, session.mirror, showDate, qr, lang]);
 
   // The guest sees themselves in every hole of the frame, as the camera will see them; stand-in
   // silhouettes until (or unless) a camera plays.
@@ -181,7 +187,7 @@ export default function FrameStage({
             }}
             disabled={busy}
           >
-            <ArrowLeft /> Ganti paket
+            <ArrowLeft /> {t('Ganti paket')}
           </button>
         }
       />
@@ -190,12 +196,12 @@ export default function FrameStage({
         <div className="rv-board">
           <div className="fit">
             {boardFailed ? (
-              <span className="g-lead">Bingkai ini tidak bisa dimuat. Pilih bingkai lain, ya.</span>
+              <span className="g-lead">{t('Bingkai ini tidak bisa dimuat. Pilih bingkai lain, ya.')}</span>
             ) : (
-              <canvas ref={boardRef} className="fr-board" aria-label="Pratinjau bingkai" />
+              <canvas ref={boardRef} className="fr-board" aria-label={t('Pratinjau bingkai')} />
             )}
           </div>
-          {camera && !boardFailed && <span className="fr-live">● LIVE · ini kamu</span>}
+          {camera && !boardFailed && <span className="fr-live">{t('● LIVE · ini kamu')}</span>}
           {/* Sources for the preview, playing but out of sight. */}
           <video ref={videoRef} className="fr-source" autoPlay playsInline muted />
           <canvas ref={feedRef} className="fr-source" />
@@ -204,21 +210,21 @@ export default function FrameStage({
         <div className="rv-side">
           <div>
             <span className="g-kicker">
-              {session.package_label} · {session.prints} lembar
+              {t(session.package_label)} · {t('{n} lembar', { n: session.prints })}
             </span>
             <h1 className="g-title" style={{ marginTop: 8 }}>
-              Pilih bingkai
+              {t('Pilih bingkai')}
             </h1>
           </div>
 
           {themes.length > 1 && (
             <section>
-              <div className="rv-label">Tema</div>
-              <div className="fr-themes" role="tablist" aria-label="Tema bingkai">
-                {themes.map((t) => (
-                  <button key={t.name} className="fr-theme" role="tab" aria-selected={t.name === theme.name} onClick={() => pickTheme(t)}>
-                    {t.name}
-                    <small>{t.choices.length}</small>
+              <div className="rv-label">{t('Tema')}</div>
+              <div className="fr-themes" role="tablist" aria-label={t('Tema bingkai')}>
+                {themes.map((th) => (
+                  <button key={th.name} className="fr-theme" role="tab" aria-selected={th.name === theme.name} onClick={() => pickTheme(th)}>
+                    {t(th.name)}
+                    <small>{th.choices.length}</small>
                   </button>
                 ))}
               </div>
@@ -226,7 +232,7 @@ export default function FrameStage({
           )}
 
           <section>
-            <div className="rv-label">{themes.length > 1 || theme.name !== BUILTIN_THEME ? `Bingkai ${theme.name}` : 'Bingkai'}</div>
+            <div className="rv-label">{themes.length > 1 || theme.name !== BUILTIN_THEME ? t('Bingkai {name}', { name: t(theme.name) }) : t('Bingkai')}</div>
             <div className="fr-grid">
               {theme.choices.map((choice) => (
                 <button key={choice.id} className="rv-option" aria-pressed={template === choice.id} onClick={() => setTemplate(choice.id)}>
@@ -246,26 +252,26 @@ export default function FrameStage({
                       </span>
                     </span>
                   )}
-                  <span className="rv-name">{choice.name}</span>
+                  <span className="rv-name">{choice.template ? t(choice.name) : choice.name}</span>
                 </button>
               ))}
             </div>
           </section>
 
-          <p className="fr-note">Gaya warna dan mode beauty dipilih setelah foto.</p>
+          <p className="fr-note">{t('Gaya warna, beauty, dan stiker dipilih setelah foto.')}</p>
 
-          {failed && <div className="g-error">Pilihanmu belum tersimpan. Coba tekan Lanjut lagi, atau panggil petugas.</div>}
+          {failed && <div className="g-error">{t('Pilihanmu belum tersimpan. Coba tekan Lanjut lagi, atau panggil petugas.')}</div>}
         </div>
       </div>
 
       <div className="g-bar">
         <div>
-          <div className="g-bar-label">Sisa waktu memilih</div>
+          <div className="g-bar-label">{t('Sisa waktu memilih')}</div>
           <div className="g-bar-value">{formatClock(left)}</div>
         </div>
         <span className="g-spacer" />
         <button className="g-cta" onClick={next} disabled={busy}>
-          {busy ? 'Menyimpan…' : payments ? 'Lanjut bayar' : 'Mulai foto'} <ArrowRight />
+          {busy ? t('Menyimpan…') : payments ? t('Lanjut bayar') : t('Mulai foto')} <ArrowRight />
         </button>
       </div>
     </main>

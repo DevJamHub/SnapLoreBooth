@@ -1,5 +1,5 @@
 import { PACKAGES } from './packages';
-import { boardLayout, type Rect } from './strip';
+import { boardLayout, sheetSize, type Rect } from './layout';
 
 /**
  * Turns an operator's frame design into something the booth can print with: a 1200x1800 PNG
@@ -11,12 +11,8 @@ import { boardLayout, type Rect } from './strip';
  *  - solid green #00FF00 boxes, which free Canva can export; the green is keyed out here.
  */
 
-const SHEET_W = 1200;
-const SHEET_H = 1800;
 /** Holes are traced on a quarter-size grid: plenty precise, and quick on an iPad. */
 const CELL = 4;
-const GRID_W = SHEET_W / CELL;
-const GRID_H = SHEET_H / CELL;
 /** Smaller clear patches are speckles in the artwork, not places for a photo. */
 const MIN_HOLE_SHARE = 0.004;
 /** Mostly see-through counts as a hole; a soft drop shadow does not. */
@@ -62,8 +58,8 @@ function isKeyGreen(r: number, g: number, b: number): boolean {
  * Makes the green boxes transparent. Their anti-aliased rims are keyed too, and what is left
  * of a rim loses its green tint, so no green line shows around a printed photo.
  */
-function keyOutGreen(data: Uint8ClampedArray): number {
-  const total = SHEET_W * SHEET_H;
+function keyOutGreen(data: Uint8ClampedArray, sheetW: number, sheetH: number): number {
+  const total = sheetW * sheetH;
   const core = new Uint8Array(total);
   let keyed = 0;
   for (let p = 0; p < total; p++) {
@@ -81,12 +77,12 @@ function keyOutGreen(data: Uint8ClampedArray): number {
       data[i + 3] = 0;
       continue;
     }
-    const x = p % SHEET_W;
+    const x = p % sheetW;
     const nearKey =
       (x > 0 && core[p - 1]) ||
-      (x < SHEET_W - 1 && core[p + 1]) ||
-      (p >= SHEET_W && core[p - SHEET_W]) ||
-      (p < total - SHEET_W && core[p + SHEET_W]);
+      (x < sheetW - 1 && core[p + 1]) ||
+      (p >= sheetW && core[p - sheetW]) ||
+      (p < total - sheetW && core[p + sheetW]);
     if (!nearKey) continue;
     const r = data[i];
     const g = data[i + 1];
@@ -187,35 +183,37 @@ function holeRect(hole: Blob2D): Rect {
 }
 
 /** Finds the see-through regions of the sheet. */
-function findHoles(data: Uint8ClampedArray): Rect[] {
-  const clear = new Uint8Array(GRID_W * GRID_H);
-  for (let gy = 0; gy < GRID_H; gy++) {
-    for (let gx = 0; gx < GRID_W; gx++) {
+function findHoles(data: Uint8ClampedArray, sheetW: number, sheetH: number): Rect[] {
+  const gridW = sheetW / CELL;
+  const gridH = sheetH / CELL;
+  const clear = new Uint8Array(gridW * gridH);
+  for (let gy = 0; gy < gridH; gy++) {
+    for (let gx = 0; gx < gridW; gx++) {
       // Sample the middle of each cell.
-      const p = (gy * CELL + CELL / 2) * SHEET_W + gx * CELL + CELL / 2;
-      clear[gy * GRID_W + gx] = data[p * 4 + 3] < CLEAR_ALPHA ? 1 : 0;
+      const p = (gy * CELL + CELL / 2) * sheetW + gx * CELL + CELL / 2;
+      clear[gy * gridW + gx] = data[p * 4 + 3] < CLEAR_ALPHA ? 1 : 0;
     }
   }
 
   const seen = new Uint8Array(clear.length);
   const stack = new Int32Array(clear.length);
-  const rowMin = new Int32Array(GRID_H);
-  const rowMax = new Int32Array(GRID_H);
+  const rowMin = new Int32Array(gridH);
+  const rowMax = new Int32Array(gridH);
   const minCells = clear.length * MIN_HOLE_SHARE;
   const holes: Rect[] = [];
 
   for (let start = 0; start < clear.length; start++) {
     if (!clear[start] || seen[start]) continue;
-    rowMin.fill(GRID_W);
+    rowMin.fill(gridW);
     rowMax.fill(-1);
-    const hole: Blob2D = { cells: 0, minX: GRID_W, minY: GRID_H, maxX: 0, maxY: 0, hull: [] };
+    const hole: Blob2D = { cells: 0, minX: gridW, minY: gridH, maxX: 0, maxY: 0, hull: [] };
     let top = 0;
     stack[top++] = start;
     seen[start] = 1;
     while (top > 0) {
       const p = stack[--top];
-      const x = p % GRID_W;
-      const y = (p - x) / GRID_W;
+      const x = p % gridW;
+      const y = (p - x) / gridW;
       hole.cells++;
       if (x < rowMin[y]) rowMin[y] = x;
       if (x > rowMax[y]) rowMax[y] = x;
@@ -223,7 +221,7 @@ function findHoles(data: Uint8ClampedArray): Rect[] {
       if (x > hole.maxX) hole.maxX = x;
       if (y < hole.minY) hole.minY = y;
       if (y > hole.maxY) hole.maxY = y;
-      const next = [x > 0 ? p - 1 : -1, x < GRID_W - 1 ? p + 1 : -1, y > 0 ? p - GRID_W : -1, y < GRID_H - 1 ? p + GRID_W : -1];
+      const next = [x > 0 ? p - 1 : -1, x < gridW - 1 ? p + 1 : -1, y > 0 ? p - gridW : -1, y < gridH - 1 ? p + gridW : -1];
       for (const q of next) {
         if (q >= 0 && clear[q] && !seen[q]) {
           seen[q] = 1;
@@ -258,8 +256,6 @@ function readingOrder(holes: Rect[]): Rect[] {
   return rows.flatMap((row) => row.sort((a, b) => a.x - b.x));
 }
 
-const PACKAGE_SHOTS = PACKAGES.map((p) => p.shots).join(', ');
-
 export async function prepareFrame(file: File): Promise<PreparedFrame> {
   const img = await loadFile(file);
   const ratio = img.naturalWidth / img.naturalHeight;
@@ -268,22 +264,23 @@ export async function prepareFrame(file: File): Promise<PreparedFrame> {
       `Ukuran frame harus 4R tegak (rasio 2:3), mis. 1200 × 1800 px. File ini ${img.naturalWidth} × ${img.naturalHeight} px.`,
     );
   }
+  const { width: sheetW, height: sheetH } = sheetSize(PACKAGES[0].format);
 
   // Every frame is stored at the size the sheet is composed at.
   const canvas = document.createElement('canvas');
-  canvas.width = SHEET_W;
-  canvas.height = SHEET_H;
+  canvas.width = sheetW;
+  canvas.height = sheetH;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   if (!ctx) throw new FrameFileError('Browser ini tidak bisa memproses gambar.');
-  ctx.drawImage(img, 0, 0, SHEET_W, SHEET_H);
-  const pixels = ctx.getImageData(0, 0, SHEET_W, SHEET_H);
+  ctx.drawImage(img, 0, 0, sheetW, sheetH);
+  const pixels = ctx.getImageData(0, 0, sheetW, sheetH);
 
   let clearCount = 0;
   for (let i = 3; i < pixels.data.length; i += 4) if (pixels.data[i] < CLEAR_ALPHA) clearCount++;
-  const hasClearHoles = clearCount >= SHEET_W * SHEET_H * MIN_HOLE_SHARE;
+  const hasClearHoles = clearCount >= sheetW * sheetH * MIN_HOLE_SHARE;
   const marking = hasClearHoles ? 'transparent' : 'green';
   if (!hasClearHoles) {
-    if (keyOutGreen(pixels.data) === 0) {
+    if (keyOutGreen(pixels.data, sheetW, sheetH) === 0) {
       throw new FrameFileError(
         'Tidak ada tempat foto di desain ini. Isi tempat foto dengan kotak hijau #00FF00, atau buat bagian itu transparan.',
       );
@@ -291,13 +288,13 @@ export async function prepareFrame(file: File): Promise<PreparedFrame> {
     ctx.putImageData(pixels, 0, 0);
   }
 
-  const slots = findHoles(pixels.data);
+  const slots = findHoles(pixels.data, sheetW, sheetH);
   const pkg = PACKAGES.find((p) => p.shots === slots.length);
   if (!pkg) {
     throw new FrameFileError(
       slots.length === 0
         ? 'Tempat fotonya terlalu kecil. Buat kotak foto lebih besar.'
-        : `Terdeteksi ${slots.length} tempat foto. Frame harus punya ${PACKAGE_SHOTS} tempat foto, sesuai paket.`,
+        : `Terdeteksi ${slots.length} tempat foto. Frame harus punya ${PACKAGES.map((p) => p.shots).join(', ')} tempat foto, sesuai paket.`,
     );
   }
 
@@ -313,12 +310,13 @@ export async function prepareFrame(file: File): Promise<PreparedFrame> {
 export async function frameGuide(format: string, label: string): Promise<Blob> {
   const pkg = PACKAGES.find((p) => p.format === format);
   const layout = boardLayout(format, 'plain', pkg?.shots ?? 1);
+  const { width: sheetW, height: sheetH } = sheetSize(format);
   const canvas = document.createElement('canvas');
-  canvas.width = SHEET_W;
-  canvas.height = SHEET_H;
+  canvas.width = sheetW;
+  canvas.height = sheetH;
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = '#f3eee8';
-  ctx.fillRect(0, 0, SHEET_W, SHEET_H);
+  ctx.fillRect(0, 0, sheetW, sheetH);
   ctx.fillStyle = '#00ff00';
   for (const slot of layout.slots) ctx.fillRect(slot.x, slot.y, slot.w, slot.h);
 
@@ -328,7 +326,7 @@ export async function frameGuide(format: string, label: string): Promise<Blob> {
     ctx.textBaseline = 'middle';
     ctx.fillStyle = '#181816';
     ctx.font = '600 40px system-ui, sans-serif';
-    ctx.fillText(`Panduan frame ${label} · 1200 × 1800 px`, x + w / 2, y + h * 0.38, w);
+    ctx.fillText(`Panduan frame ${label} · ${sheetW} × ${sheetH} px`, x + w / 2, y + h * 0.38, w);
     ctx.fillStyle = '#6e6259';
     ctx.font = '400 28px system-ui, sans-serif';
     ctx.fillText('Kotak hijau = tempat foto. Boleh digeser, diubah ukuran, dimiringkan.', x + w / 2, y + h * 0.68, w);

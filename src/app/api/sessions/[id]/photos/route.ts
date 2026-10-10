@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { addPhoto, getSession, listPhotos } from '@/lib/db';
 import { sessionUnlocked } from '@/lib/payments';
 import { InvalidImageError, saveDataUrl } from '@/lib/storage';
+import { shotCount } from '@/lib/picks';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,8 +22,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   const index = Number(body.index);
-  if (!Number.isInteger(index) || index < 1 || index > session.shots) {
-    return NextResponse.json({ error: `index must be an integer between 1 and ${session.shots}` }, { status: 400 });
+  // The sheet's photos and any bonus ones to pick from.
+  if (!Number.isInteger(index) || index < 1 || index > shotCount(session)) {
+    return NextResponse.json({ error: `index must be an integer between 1 and ${shotCount(session)}` }, { status: 400 });
   }
   if (typeof body.dataUrl !== 'string') {
     return NextResponse.json({ error: 'dataUrl is required' }, { status: 400 });

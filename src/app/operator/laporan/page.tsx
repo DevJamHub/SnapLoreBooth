@@ -1,8 +1,11 @@
 import Link from 'next/link';
+import ContactsPanel from '@/components/ContactsPanel';
 import OperatorHeader from '@/components/OperatorHeader';
+import { contactCount, listContacts } from '@/lib/contacts';
 import { currentEvent } from '@/lib/events';
 import { formatPrice } from '@/lib/packages';
 import { RANGES, buildReport, rangeOf } from '@/lib/reports';
+import { PURGE_CONFIRMATION } from '@/lib/retention';
 
 export const dynamic = 'force-dynamic';
 
@@ -168,6 +171,35 @@ export default async function ReportPage({ searchParams }: { searchParams: Promi
         <Ranking title="Bingkai favorit" rows={report.frames} unit="lembar" />
         <Ranking title="Gaya warna" rows={report.filters} unit="lembar" />
         <Ranking title="Mode beauty" rows={report.beauty} unit="lembar" />
+
+        {report.promos.length > 0 && (
+          <section className="op-card">
+            <div className="op-card-head">
+              <h2>Kode promo</h2>
+              <span className="op-muted">diskon {formatPrice(report.discount)}</span>
+            </div>
+            <table className="op-table">
+              <thead>
+                <tr>
+                  <th>Kode</th>
+                  <th className="op-num">Sesi</th>
+                  <th className="op-num">Diskon</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.promos.map((p) => (
+                  <tr key={p.label}>
+                    <td className="op-promo-code">{p.label}</td>
+                    <td className="op-num">{p.count}</td>
+                    <td className="op-num">{formatPrice(p.discount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+        )}
+
+        <ContactsPanel contacts={listContacts(12)} total={contactCount()} confirmWord={PURGE_CONFIRMATION} />
 
         <section className="op-card">
           <div className="op-card-head">

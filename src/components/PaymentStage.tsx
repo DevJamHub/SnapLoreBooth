@@ -6,6 +6,7 @@ import QRCode from 'qrcode';
 import GuestHeader from '@/components/guest/GuestHeader';
 import { formatClock, useIdle } from '@/components/guest/hooks';
 import { ArrowLeft, Check, Retry } from '@/components/guest/icons';
+import { useT } from '@/components/guest/lang';
 import { formatPrice } from '@/lib/packages';
 import type { Session } from '@/lib/types';
 
@@ -29,6 +30,7 @@ const IDLE_AFTER_EXPIRY_MS = 45_000;
 
 export default function PaymentStage({ session }: { session: Session }) {
   const router = useRouter();
+  const t = useT();
   const [payment, setPayment] = useState<PublicPayment | null>(null);
   const [qrImage, setQrImage] = useState<string | null>(null);
   const [testMode, setTestMode] = useState(false);
@@ -126,7 +128,7 @@ export default function PaymentStage({ session }: { session: Session }) {
     }
   };
 
-  const prints = `${session.prints} lembar cetak`;
+  const prints = t('{n} lembar cetak', { n: session.prints });
 
   return (
     <main className="g-screen">
@@ -136,7 +138,7 @@ export default function PaymentStage({ session }: { session: Session }) {
         left={
           paid ? undefined : (
             <button className="g-ghost" onClick={() => (pending && !expired ? setConfirmCancel(true) : router.replace('/'))}>
-              <ArrowLeft /> Batal
+              <ArrowLeft /> {t('Batal')}
             </button>
           )
         }
@@ -145,7 +147,7 @@ export default function PaymentStage({ session }: { session: Session }) {
           pending &&
           !expired && (
             <button className="g-ghost" onClick={simulate} disabled={simulating} style={{ fontSize: 15, minHeight: 48 }}>
-              {simulating ? 'Memproses…' : 'Simulasi bayar'}
+              {simulating ? t('Memproses…') : t('Simulasi bayar')}
             </button>
           )
         }
@@ -155,18 +157,19 @@ export default function PaymentStage({ session }: { session: Session }) {
         <div className="pay-copy">
           {paid ? (
             <>
-              <span className="g-kicker">Pembayaran diterima</span>
-              <h1 className="g-title">Makasih! Siap-siap bergaya ya.</h1>
-              <p className="g-lead">Kamera akan menyala sebentar lagi.</p>
+              <span className="g-kicker">{t('Pembayaran diterima')}</span>
+              <h1 className="g-title">{t('Makasih! Siap-siap bergaya ya.')}</h1>
+              <p className="g-lead">{t('Kamera akan menyala sebentar lagi.')}</p>
             </>
           ) : (
             <>
-              <span className="g-kicker">Scan QRIS</span>
-              <h1 className="g-title">Scan pakai aplikasi apa saja</h1>
+              <span className="g-kicker">{t('Scan QRIS')}</span>
+              <h1 className="g-title">{t('Scan pakai aplikasi apa saja')}</h1>
               <div>
                 <div className="pay-amount">{formatPrice(payment?.amount_idr ?? session.price_idr)}</div>
                 <p className="pay-summary" style={{ marginTop: 10 }}>
-                  {session.package_label} · {prints}
+                  {t(session.package_label)} · {prints}
+                  {session.voucher && ` · ${t('promo {code} hemat {amount}', { code: session.voucher, amount: formatPrice(session.discount_idr) })}`}
                 </p>
               </div>
               <div className="pay-apps">
@@ -175,7 +178,7 @@ export default function PaymentStage({ session }: { session: Session }) {
                 ))}
               </div>
               <p className="g-lead" style={{ fontSize: 17 }}>
-                Booth lanjut sendiri begitu pembayaranmu masuk. Tidak perlu sentuh apa-apa.
+                {t('Booth lanjut sendiri begitu pembayaranmu masuk. Tidak perlu sentuh apa-apa.')}
               </p>
             </>
           )}
@@ -183,38 +186,38 @@ export default function PaymentStage({ session }: { session: Session }) {
 
         <div className="pay-qr-col">
           <div className="qr-card">
-            {testMode && !paid && <span className="qr-badge">MODE TES</span>}
+            {testMode && !paid && <span className="qr-badge">{t('MODE TES')}</span>}
             {paid ? (
               <div className="qr-state">
                 <span className="qr-paid">
                   <Check />
                 </span>
-                Lunas
+                {t('Lunas')}
               </div>
             ) : failed ? (
               <div className="qr-state">
-                QRIS belum bisa dibuat.
+                {t('QRIS belum bisa dibuat.')}
                 <button className="g-cta" onClick={issue} disabled={issuing} style={{ minHeight: 60, fontSize: 18 }}>
-                  <Retry /> Coba lagi
+                  <Retry /> {t('Coba lagi')}
                 </button>
               </div>
             ) : expired ? (
               <div className="qr-state">
-                Kode QR sudah kedaluwarsa.
+                {t('Kode QR sudah kedaluwarsa.')}
                 <button className="g-cta" onClick={issue} disabled={issuing} style={{ minHeight: 60, fontSize: 18 }}>
-                  <Retry /> Buat kode baru
+                  <Retry /> {t('Buat kode baru')}
                 </button>
               </div>
             ) : qrImage ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={qrImage} alt="Kode QRIS untuk pembayaran" />
+              <img src={qrImage} alt={t('Kode QRIS untuk pembayaran')} />
             ) : (
-              <div className="qr-state">Menyiapkan QRIS…</div>
+              <div className="qr-state">{t('Menyiapkan QRIS…')}</div>
             )}
           </div>
           {pending && !expired && (
             <span className="waiting">
-              <i /> Menunggu pembayaran · berlaku {formatClock(secondsLeft)}
+              <i /> {t('Menunggu pembayaran · berlaku {time}', { time: formatClock(secondsLeft) })}
             </span>
           )}
         </div>
@@ -223,17 +226,14 @@ export default function PaymentStage({ session }: { session: Session }) {
       {confirmCancel && (
         <div className="g-modal-backdrop" onClick={() => setConfirmCancel(false)}>
           <div className="g-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-            <h2>Batalkan sesi ini?</h2>
-            <p>
-              Kalau kamu <b style={{ color: 'var(--text)' }}>sudah scan dan membayar</b>, jangan dibatalkan — tunggu beberapa detik,
-              booth akan lanjut sendiri.
-            </p>
+            <h2>{t('Batalkan sesi ini?')}</h2>
+            <p>{t('Kalau kamu sudah scan dan membayar, jangan dibatalkan — tunggu beberapa detik, booth akan lanjut sendiri.')}</p>
             <div className="g-modal-actions">
               <button className="g-cta" onClick={() => setConfirmCancel(false)} style={{ minHeight: 64, fontSize: 19 }}>
-                Lanjut bayar
+                {t('Lanjut bayar')}
               </button>
               <button className="g-ghost" onClick={() => router.replace('/')}>
-                Ya, batalkan
+                {t('Ya, batalkan')}
               </button>
             </div>
           </div>

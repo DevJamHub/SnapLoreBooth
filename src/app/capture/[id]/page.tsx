@@ -6,6 +6,7 @@ import { eventById } from '@/lib/events';
 import { mediaUrl } from '@/lib/format';
 import { frameForSession } from '@/lib/frames';
 import { sessionUnlocked } from '@/lib/payments';
+import { printedQr } from '@/lib/publicUrl';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,6 +28,7 @@ export default async function CapturePage({ params }: { params: Promise<{ id: st
       settings={{
         countdown: config.flow.countdown,
         sound: config.capture.sound,
+        voice: config.capture.voice,
         showMs: config.flow.showTenths * 100,
         sessionSeconds: config.flow.captureSeconds,
         retake: config.capture.retake,
@@ -41,6 +43,7 @@ export default async function CapturePage({ params }: { params: Promise<{ id: st
       showDate={config.sheet.date}
       initialShots={initialShots}
       frame={frameForSession(session)}
+      qr={await printedQr(id, config)}
     />
   );
 }

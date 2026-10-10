@@ -1,9 +1,12 @@
+import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 import { getConfig } from '@/lib/config';
 import { createSession, listSessions, updateSession } from '@/lib/db';
+import { LANG_COOKIE, langOf } from '@/lib/i18n';
 import { currentEvent, priceOf } from '@/lib/events';
 import { EXTRA_PRINT, packageById } from '@/lib/packages';
 import { paymentsEnabled } from '@/lib/payments';
+import { VoucherError, discounted, normalizeCode, usableVoucher } from '@/lib/vouchers';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +23,7 @@ export function GET() {
 }
 
 export async function POST(request: Request) {
-  let body: { packageId?: string; extraPrints?: unknown };
+  let body: { packageId?: string; extraPrints?: unknown; voucher?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -40,7 +43,20 @@ export async function POST(request: Request) {
 
   // The price is always worked out here from the event's price list; the kiosk never sends one.
   const event = currentEvent();
-  const priceIdr = priceOf(event, pkg.id) + extraPrints * priceOf(event, EXTRA_PRINT.id);
+  const listPrice = priceOf(event, pkg.id) + extraPrints * priceOf(event, EXTRA_PRINT.id);
+  let priceIdr = listPrice;
+  let voucher: string | null = null;
+  // A promo code only means something where guests pay.
+  if (normalizeCode(body.voucher) && paymentsEnabled() && listPrice > 0) {
+    try {
+      const code = usableVoucher(normalizeCode(body.voucher));
+      priceIdr = discounted(listPrice, code).total;
+      voucher = code.code;
+    } catch (error) {
+      if (error instanceof VoucherError) return NextResponse.json({ error: error.message }, { status: 400 });
+      throw error;
+    }
+  }
 
   const session = createSession({
     id: newSessionId(),
@@ -58,6 +74,10 @@ export async function POST(request: Request) {
     filter: config.style.defaultFilter,
     beauty: config.style.beauty ? config.style.defaultBeauty : 'off',
     inGallery: config.share.galleryDefault,
+    voucher,
+    discountIdr: listPrice - priceIdr,
+    bonus: config.capture.bonus,
+    lang: langOf((await cookies()).get(LANG_COOKIE)?.value),
   });
 
   // The guest styles the frame before paying, so a session opens on the Hias step.

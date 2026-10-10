@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { BoothStatus, Payment, Photo, Session, SessionStatus } from './types';
 
-export const DATA_DIR = path.join(process.cwd(), 'data');
+/** BOOTH_DATA_DIR keeps a test run (or a second booth on one machine) out of the real data. */
+export const DATA_DIR = process.env.BOOTH_DATA_DIR ? path.resolve(process.env.BOOTH_DATA_DIR) : path.join(process.cwd(), 'data');
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 /** Operator-uploaded frame PNGs. Not guest data, so retention and "hapus foto tamu" leave them. */
 export const FRAME_DIR = path.join(DATA_DIR, 'frames');
@@ -76,6 +77,26 @@ function open(): Database.Database {
       key   TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS vouchers (
+      code       TEXT PRIMARY KEY,
+      kind       TEXT NOT NULL,
+      value      INTEGER NOT NULL DEFAULT 0,
+      max_uses   INTEGER,
+      expires_at TEXT,
+      active     INTEGER NOT NULL DEFAULT 1,
+      note       TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS contacts (
+      id         TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      event_id   TEXT,
+      name       TEXT NOT NULL,
+      phone      TEXT NOT NULL DEFAULT '',
+      instagram  TEXT NOT NULL DEFAULT '',
+      answer     TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS frames (
       id         TEXT PRIMARY KEY,
       name       TEXT NOT NULL,
@@ -97,6 +118,16 @@ function open(): Database.Database {
     addColumn(db, 'frames', 'theme', "theme TEXT NOT NULL DEFAULT ''");
     addColumn(db, 'sessions', 'reprints', 'reprints INTEGER NOT NULL DEFAULT 0');
     addColumn(db, 'frames', 'hidden', 'hidden INTEGER NOT NULL DEFAULT 0');
+    addColumn(db, 'sessions', 'decor', 'decor TEXT');
+    addColumn(db, 'sessions', 'voucher', 'voucher TEXT');
+    addColumn(db, 'sessions', 'discount_idr', 'discount_idr INTEGER NOT NULL DEFAULT 0');
+    addColumn(db, 'payments', 'purpose', "purpose TEXT NOT NULL DEFAULT 'session'");
+    addColumn(db, 'sessions', 'bonus', 'bonus INTEGER NOT NULL DEFAULT 0');
+    addColumn(db, 'sessions', 'picks', 'picks TEXT');
+    addColumn(db, 'sessions', 'erased_at', 'erased_at TEXT');
+    addColumn(db, 'sessions', 'background', "background TEXT NOT NULL DEFAULT 'none'");
+    addColumn(db, 'sessions', 'lang', "lang TEXT NOT NULL DEFAULT 'id'");
+    addColumn(db, 'payments', 'copies', 'copies INTEGER NOT NULL DEFAULT 0');
     // Guests now switch the mirror themselves, starting mirrored. Done once, so an operator
     // who turns the default off afterwards keeps it off.
     const mirrorDefault = db.prepare(`SELECT 1 FROM settings WHERE key = 'migration.mirror_default_on'`).get();
@@ -141,8 +172,10 @@ function addColumn(db: Database.Database, table: string, column: string, ddl: st
 export const db: Database.Database = globalForDb.__boothDb ?? open();
 if (process.env.NODE_ENV !== 'production') globalForDb.__boothDb = db;
 
-interface SessionRow extends Omit<Session, 'addons' | 'photo_count' | 'requires_payment' | 'in_gallery' | 'mirror'> {
+interface SessionRow extends Omit<Session, 'addons' | 'photo_count' | 'requires_payment' | 'in_gallery' | 'mirror' | 'decor' | 'picks'> {
   addons: string;
+  decor: string | null;
+  picks: string | null;
   photo_count: number;
   requires_payment: number;
   in_gallery: number;
@@ -157,6 +190,8 @@ function hydrate(row: SessionRow | undefined): Session | null {
     requires_payment: row.requires_payment === 1,
     in_gallery: row.in_gallery === 1,
     mirror: row.mirror === 1,
+    decor: row.decor ? (JSON.parse(row.decor) as Session['decor']) : [],
+    picks: row.picks ? (JSON.parse(row.picks) as number[]) : null,
   };
 }
 
@@ -181,10 +216,17 @@ export function createSession(input: {
   filter: string;
   beauty: string;
   inGallery: boolean;
+  /** A promo code and what it took off `priceIdr` (which is already the price after it). */
+  voucher?: string | null;
+  discountIdr?: number;
+  /** Extra photos to pick the best from. */
+  bonus?: number;
+  /** The guest's language, for the page their QR opens. */
+  lang?: string;
 }): Session {
   db.prepare(
-    `INSERT INTO sessions (id, created_at, package_id, package_label, format, shots, price_idr, addons, prints, event_id, requires_payment, mirror, filter, beauty, in_gallery)
-     VALUES (@id, @created_at, @package_id, @package_label, @format, @shots, @price_idr, @addons, @prints, @event_id, @requires_payment, @mirror, @filter, @beauty, @in_gallery)`,
+    `INSERT INTO sessions (id, created_at, package_id, package_label, format, shots, price_idr, addons, prints, event_id, requires_payment, mirror, filter, beauty, in_gallery, voucher, discount_idr, bonus, lang)
+     VALUES (@id, @created_at, @package_id, @package_label, @format, @shots, @price_idr, @addons, @prints, @event_id, @requires_payment, @mirror, @filter, @beauty, @in_gallery, @voucher, @discount_idr, @bonus, @lang)`,
   ).run({
     id: input.id,
     created_at: new Date().toISOString(),
@@ -201,6 +243,10 @@ export function createSession(input: {
     filter: input.filter,
     beauty: input.beauty,
     in_gallery: input.inGallery ? 1 : 0,
+    voucher: input.voucher ?? null,
+    discount_idr: input.discountIdr ?? 0,
+    bonus: input.bonus ?? 0,
+    lang: input.lang ?? 'id',
   });
   return getSession(input.id)!;
 }
@@ -279,14 +325,16 @@ export function sessionCounts(): Map<string, number> {
 export function updateSession(
   id: string,
   patch: Partial<
-    Pick<Session, 'status' | 'filter' | 'template' | 'prints' | 'delivered_to' | 'strip_file' | 'in_gallery' | 'live_file' | 'mirror' | 'beauty'>
+    Pick<Session, 'status' | 'filter' | 'template' | 'prints' | 'delivered_to' | 'strip_file' | 'in_gallery' | 'live_file' | 'mirror' | 'beauty' | 'decor' | 'picks' | 'background'>
   >,
 ): Session | null {
   const fields = Object.keys(patch) as (keyof typeof patch)[];
   if (fields.length === 0) return getSession(id);
   const assignments = fields.map((f) => `${f} = @${f}`).join(', ');
-  // SQLite stores booleans as 0/1 and better-sqlite3 refuses to bind a JS boolean.
-  const values = Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, typeof v === 'boolean' ? (v ? 1 : 0) : v]));
+  // SQLite stores booleans as 0/1 and better-sqlite3 refuses to bind a JS boolean; lists go as JSON.
+  const values = Object.fromEntries(
+    Object.entries(patch).map(([k, v]) => [k, typeof v === 'boolean' ? (v ? 1 : 0) : Array.isArray(v) ? (v.length ? JSON.stringify(v) : null) : v]),
+  );
   db.prepare(`UPDATE sessions SET ${assignments} WHERE id = @id`).run({ id, ...values });
   return getSession(id);
 }
@@ -326,11 +374,22 @@ export function createPayment(input: {
   amountIdr: number;
   qrString: string;
   expiresAt: string;
+  /** Extra sheets bought after the print, and how many; the session itself otherwise. */
+  extraCopies?: number;
 }): Payment {
   db.prepare(
-    `INSERT INTO payments (id, session_id, amount_idr, qr_string, expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(input.id, input.sessionId, input.amountIdr, input.qrString, input.expiresAt, new Date().toISOString());
+    `INSERT INTO payments (id, session_id, amount_idr, qr_string, expires_at, created_at, purpose, copies)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    input.id,
+    input.sessionId,
+    input.amountIdr,
+    input.qrString,
+    input.expiresAt,
+    new Date().toISOString(),
+    input.extraCopies ? 'extra' : 'session',
+    input.extraCopies ?? 0,
+  );
   return getPayment(input.id)!;
 }
 
@@ -338,17 +397,17 @@ export function getPayment(id: string): Payment | null {
   return (db.prepare('SELECT * FROM payments WHERE id = ?').get(id) as Payment | undefined) ?? null;
 }
 
-/** The newest QR issued for a session — the only one the kiosk is showing. */
-export function latestPayment(sessionId: string): Payment | null {
+/** The newest QR issued for a session (or for its extra sheets) — the only one the kiosk is showing. */
+export function latestPayment(sessionId: string, purpose: Payment['purpose'] = 'session'): Payment | null {
   return (
     (db
-      .prepare('SELECT * FROM payments WHERE session_id = ? ORDER BY created_at DESC LIMIT 1')
-      .get(sessionId) as Payment | undefined) ?? null
+      .prepare('SELECT * FROM payments WHERE session_id = ? AND purpose = ? ORDER BY created_at DESC LIMIT 1')
+      .get(sessionId, purpose) as Payment | undefined) ?? null
   );
 }
 
 export function isSessionPaid(sessionId: string): boolean {
-  return db.prepare(`SELECT 1 FROM payments WHERE session_id = ? AND status = 'paid' LIMIT 1`).get(sessionId) !== undefined;
+  return db.prepare(`SELECT 1 FROM payments WHERE session_id = ? AND status = 'paid' AND purpose = 'session' LIMIT 1`).get(sessionId) !== undefined;
 }
 
 /**
@@ -372,9 +431,17 @@ export function addReprints(sessionId: string, copies: number): boolean {
 
 /** Idempotent: the webhook and the kiosk's poll may both report the same payment. */
 export function markPaymentPaid(id: string, providerPaymentId: string): Payment | null {
-  db.prepare(
-    `UPDATE payments SET status = 'paid', paid_at = ?, provider_payment_id = ? WHERE id = ? AND status != 'paid'`,
-  ).run(new Date().toISOString(), providerPaymentId, id);
+  // Settled once, whichever of the webhook and the kiosk's poll gets here first: extra sheets
+  // are added to the session in the same step, so they can never be added twice.
+  db.transaction(() => {
+    const settled = db
+      .prepare(`UPDATE payments SET status = 'paid', paid_at = ?, provider_payment_id = ? WHERE id = ? AND status != 'paid'`)
+      .run(new Date().toISOString(), providerPaymentId, id).changes;
+    const payment = getPayment(id);
+    if (settled && payment?.purpose === 'extra' && payment.copies > 0) {
+      db.prepare('UPDATE sessions SET prints = prints + ? WHERE id = ?').run(payment.copies, payment.session_id);
+    }
+  }).immediate();
   return getPayment(id);
 }
 

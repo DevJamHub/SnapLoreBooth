@@ -2,8 +2,9 @@
 
 A tablet photobooth kiosk — guests pick a format, pay by QRIS, the booth counts them down
 through every pose on its own, they choose a look and a frame, and it prints the board and
-hands it over by QR. Built for a 10–13" iPad in landscape on a booth stand, with a hidden
-operator console on the same server. Guest screens are in Indonesian.
+hands it over by QR. Built for a 10–13" tablet in landscape on a booth stand — an iPad or an
+Android tablet (Chrome) — with a hidden operator console on the same server. Guest screens are
+in Indonesian.
 
 Visual language follows the **Warm Editorial Tablet Studio** design system
 (Stitch asset `481f2491f6e546c8a61d82fb602eb6d4`): warm charcoal surfaces, terracotta
@@ -27,6 +28,18 @@ npm run dev      # http://localhost:4300
 
 Production: `npm run build && npm start`.
 
+**Tests.** `npm run test:e2e` starts its own server on port 4311 with its own data (`.e2e-data`,
+wiped first; `BOOTH_DATA_DIR` points the booth at any folder) and build folder (`.next-e2e`, so a
+running `npm run dev` is never disturbed), then drives a guest through the whole flow in Chrome
+with a fake camera: a promo code, QRIS payment, bonus shots and picking, a look, an AI backdrop,
+stickers, writing and drawing, print, *Cetak lagi*, then on the phone the GIF, boomerang, story,
+WhatsApp, a contact with consent, and *Hapus fotoku*; then a tourist switching to English and
+back. It also checks the promo and decoration rules and that every guest string has English. It uses the installed Google Chrome; `PW_CHANNEL=chromium` uses Playwright's own browser.
+
+**Xendit without Xendit.** `XENDIT_SECRET_KEY=mock` stands in for Xendit with no network: QR
+codes are made up and paid with *Simulasi bayar* (as with a development key). The tests use it; it
+also suits a rehearsal without internet. Never use it on a live booth.
+
 The camera needs a secure context. `localhost` counts, so the kiosk works during local
 development; on a real booth serve it over HTTPS or the browser will refuse `getUserMedia`.
 
@@ -40,13 +53,13 @@ the *Sentuh untuk mulai* button starts a session.
 | Route | What happens | Clock |
 | --- | --- | --- |
 | `/` | Standby: drifting polaroids and one start button | — |
-| `/paket` | 6 / 4 / 3 poses or one portrait, all on **one uncut 4R sheet**; a stepper adds extra sheets (+1 cetak) | back to standby after 60s untouched |
+| `/paket` | 6 / 4 / 3 poses or one portrait, all on **one uncut 4R sheet**; a stepper adds extra sheets (+1 cetak); *Kode promo* takes a promo code | back to standby after 60s untouched |
 | `/hias/[id]` | Pick the frame, browsed by theme (Bioskop, Romance, … then the built-in *Simpel*), with the guest live in every hole of it. *Ganti paket* goes back and discards the still-empty session | 5 minutes, then continues with what is selected |
 | `/pay/[id]` | QRIS from Xendit; moves on by itself once paid. *Batal* asks first while a code is live | back to standby 45s after the code expires |
-| `/capture/[id]` | Camera on the left, the sheet filling in on the right. 3-second countdown per shot; afterwards tap any photo on the sheet to retake it. *Mode cermin* switch on the camera | 10 minutes, then missing shots are taken and the guest moves on |
-| `/gaya/[id]` | The guest's own photos in the frame: pick the colour look and **beauty** (Mati / Natural / Glowing). Hold the preview to see the original. The sheet is made here | 2 minutes, then prints with what is selected |
-| `/share/[id]` | Print (simulated or AirPrint), QR to save to a phone, opt out of the live gallery | 45s after printing; 3 min if never printed |
-| `/d/[id]` | What the QR opens: the sheet, every photo, and every **live clip** | — |
+| `/capture/[id]` | Camera on the left, the sheet filling in on the right. 3-second countdown per shot, plus any **bonus shots**; then the guest **picks the best** for the sheet, and can tap a photo on the sheet to retake it. *Mode cermin* switch on the camera | 10 minutes, then missing shots are taken, empty holes are filled, and the guest moves on |
+| `/gaya/[id]` | *Hias fotomu*: the guest's own photos in the frame. **Warna** picks the colour look and **beauty** (Mati / Natural / Glowing; hold the preview to see the original); **Latar AI** swaps the background; **Stiker**, **Tulisan** and **Gambar** put stickers, writing and finger drawing on the sheet. The sheet is made here | 3 minutes, then prints with what is selected |
+| `/share/[id]` | Print (simulated or AirPrint), QR to save to a phone, opt out of the live gallery, **Mau cetak lagi?** to buy more sheets by QRIS | 45s after printing; 3 min if never printed |
+| `/d/[id]` | What the QR opens: the sheet, every photo (bonus ones too), and every **live clip**; *Bagikan*, *WhatsApp*, *Versi Story*, *Jadikan GIF* and per-clip *Boomerang*; an optional contact form; *Hapus fotoku* | — |
 | `/g/[slug]` | The event link: rotating live sheets while it runs, the photo gallery once it ends | — |
 
 The clocks are the defaults; *Konsol → Pengaturan* changes them, along with the countdown,
@@ -80,7 +93,67 @@ seconds it takes. Without canvas filter support (Safari before 18) the live shee
 colour look; the printed sheet always has it.
 
 Layouts live in `boardLayout()` in `src/lib/strip.ts`: every package is a 1200x1800 board
-(4x6in at 300dpi), and old 2x6 strips still render for sessions made before.
+(4x6in at 300dpi). Strips from packages no longer offered (2x6, and the short-lived Strip 4
+Pose, dropped because the booth's printer has no cutter) still render and reprint two-up.
+
+**Looks and textures.** Besides colour (Asli, Hangat, Hitam Putih, Vintage, Senja, Korea Soft,
+Pastel, Ceria) some looks lay a texture over each photo: *Film* (grain and darkened corners),
+*Retro* (a warm light leak and grain), *Dramatis* (contrasty black and white, corners, grain).
+Textures are drawn per photo slot (`drawFx()` in `strip.ts`), on the print and in the live sheet
+alike, and their swatches on Gaya show them. Booths set up before these looks existed get them
+offered once (`offerNewCatalogue()` in `config.ts`); switching one off keeps it off.
+
+**Hias: stickers, writing, drawing.** With *Pengaturan → Gaya & beauty → Stiker & coretan* on,
+Gaya has three more tabs:
+
+- **Stiker**: 24 emoji stickers (drawn with the device's own emoji font) and 10 badges (*OMG!*,
+  *BESTIE*, *SAH!*, *HBD!*… and one with the event's name or hashtag), drawn by the booth so they
+  look alike on every device.
+- **Tulisan**: up to 30 characters in handwriting (Caveat), serif or bold, in eight colours, with
+  a contrasting rim so it reads on any photo.
+- **Gambar**: finger drawing in eight colours and three widths.
+
+A tapped piece is selected: drag to move, the corner handle or two fingers to turn and resize,
+the cross to delete. *Urungkan* undoes whole gestures; *Hapus semua hiasan* clears the sheet (and
+can be undone). Decorations are stored on the session as data in sheet pixels (`lib/decor.ts`),
+checked by the server (60 pieces, 9,000 ink points), and drawn the same way on the print, the
+live sheet and the QR page. The screen shows them as an SVG layer over the sheet, so moving one
+never waits for the sheet to recompose.
+
+**QR on the print.** *Pengaturan → Paket & cetak → QR di cetakan* prints a small QR to the
+guest's photos and videos in a built-in frame's footer (all but *Polos*), on a white square so it
+scans on a dark board too; the live sheet carries it as well. It follows *QR simpan ke HP*: an
+event without the take-home QR prints none. Uploaded frames are the designer's own and get none.
+
+**Bonus shots and picking the best.** Off by default: a guest shoots exactly as many photos as
+the sheet has holes. *Pengaturan → Foto & pose → Foto bonus* (+1, +2 or +4) has the guest shoot
+that many photos beyond the sheet's holes. After the last one, the
+camera panel turns into a picker: every photo, the chosen ones numbered by their hole. A tap puts
+a photo in the next empty hole or takes it out; the sheet beside it follows, and *Pilih gaya*
+waits until every hole has one. Photos keep the number they were shot as (and their file); the
+session records which goes where (`picks`, `lib/picks.ts`), so a retake never overwrites another
+photo. Bonus photos and their clips are still on the QR page; the live sheet uses the picked ones.
+A session clock that runs out fills empty holes with the photos not chosen.
+
+**Latar AI: backgrounds without a green screen.** With *Pengaturan → Gaya & beauty → Latar AI*
+on, Gaya has a *Latar AI* tab: *Asli* or one of eight backdrops drawn by the booth (Studio, Pink
+Pastel, Langit, Senja, Lampu Kota, Konfeti, Retro Kotak, Terakota; `lib/backgrounds.ts`). The
+people in each photo are found on the device by MediaPipe's selfie segmenter (`lib/segment.ts`):
+the 250 KB model is in `public/models`, its WebAssembly runtime is served from the installed
+package by `/api/vision`, so no CDN or paid service is involved. The model loads quietly a moment
+after Gaya opens (a few seconds the first time on a slow tablet), each photo is read at 640 px,
+and masks are kept while the guest tries backdrops. It applies to the printed sheet and the QR
+page's sheet; the live video keeps the real background. A device whose browser cannot run it
+keeps the photos as they are and says so.
+
+**Voice.** Off by default; the countdown only beeps. *Pengaturan → Foto & pose → Suara pemandu*
+reads the pose out (countdowns of 5 seconds or more) and says *tiga, dua, satu* in place of the
+beeps, with the device's own Indonesian voice (iPadOS has one; Android has Google's once its
+speech data is installed). Without one the booth keeps beeping.
+
+Bonus shots, the voice, and the guest's own *Hapus fotoku* and gallery switch were once on by
+default. A booth that saved its settings back then has all four switched off once, on the first
+start after updating (`migration.guest_extras_off`); one switched back on afterwards stays on.
 
 ## Events: one gig, one set of settings
 
@@ -140,13 +213,94 @@ refuses what the console would not offer.
 
 | Section | Settings |
 | --- | --- |
-| Layar awal | Small line, title (two lines), start button text, info chips, how long to hold the logo for the console |
-| Paket & cetak | Which packages are offered, extra prints on/off and their maximum, the text the built-in frames print (e.g. a hashtag instead of the event name) and whether they print the date |
+| Layar awal | Small line, title (two lines), start button text, info chips, English for guests, full screen on start, guests' sheets on the polaroids, how long to hold the logo for the console |
+| Paket & cetak | Which packages are offered, extra prints on/off and their maximum, the text the built-in frames print (e.g. a hashtag instead of the event name), whether they print the date, and the QR on the print |
 | Alur & waktu | Package screen idle, Hias time, live camera on Hias, QRIS validity, photo session length, Gaya time, print screen time |
-| Foto & pose | Countdown beeps and shutter sound, countdown (3/5/7/10 s), how long each photo shows, retakes on/off, the pose prompts (one per line), per-shot video on/off and its quality (Hemat / Standar / Tinggi) |
-| Gaya & beauty | Which colour looks are offered and which is preselected, beauty on/off and its preselected level. With only *Asli* and no beauty the Gaya screen makes the sheet and moves on by itself |
-| Berbagi & galeri | QR on the print screen, sessions join the gallery unasked, the guest's own gallery switch, the whole-sheet video, a message on the QR page |
+| Foto & pose | Countdown beeps and shutter sound, the voice, countdown (3/5/7/10 s), how long each photo shows, bonus shots to pick from, retakes on/off, the pose prompts (one per line), per-shot video on/off and its quality (Hemat / Standar / Tinggi) |
+| Gaya & beauty | Which colour looks are offered and which is preselected, beauty on/off and its preselected level, AI backgrounds on/off, stickers & drawing on/off. With only *Asli*, no beauty and no stickers the Gaya screen makes the sheet and moves on by itself |
+| Berbagi & galeri | QR on the print screen, sessions join the gallery unasked, the guest's own gallery switch, *Cetak lagi*, the whole-sheet video, the contact form and its question, the guest's *Hapus fotoku*, a message on the QR page |
 | Penyimpanan | How long photos and (separately) videos are kept, the size camera photos are kept at, JPEG quality, disk use by kind, *Optimalkan sekarang* |
+
+## Standby: the newest guests on the polaroids
+
+With *Foto tamu di layar awal* on, the drifting polaroids on standby are the newest sheets of the
+running event — only those in its gallery, and only while the event's gallery is on, so a guest
+never asked does not end up on the booth's screen. The rest stay stand-ins; the screen picks up
+new sheets every minute while it waits.
+
+*Layar penuh* (on by default) puts the browser full screen when a guest taps the start button,
+which hides Chrome's address bar on an Android tablet. It lasts until the page reloads; an
+installed home-screen app is left as it is.
+
+## Cetak lagi: more sheets after the print
+
+With *Pengaturan → Berbagi & galeri → Tawarkan cetak lagi* on and the event taking QRIS, the print
+screen's bottom bar offers *Mau cetak lagi?* once the sheets are out: a stepper (up to *Maksimal
+cetakan tambahan*) at the event's +1 cetak price, then a QRIS code in a dialog. Paid, the sheets are added
+to the session when the payment settles (`markPaymentPaid()`, in the same step, so the webhook and
+the poll can never add them twice) and the screen prints exactly those, through the same print
+flow; revenue, paper count and reports include them. Closing the dialog while a code is live asks
+first, as the payment screen does. The return to standby waits while the dialog is open, but a
+guest who walks away from it still releases the booth after 3 minutes.
+
+## English for guests
+
+With *Pengaturan → Layar awal → Bahasa Inggris* on (the default), standby shows *Start in English*
+under the start button and the package screen an **ID · EN** switch. The choice holds for that
+guest's whole session — the booth screens, the voice (*three, two, one* with the device's English
+voice), the printed date, and the page their QR opens (the session keeps it) — and standby goes
+back to Indonesian for the next guest. The operator console stays Indonesian.
+
+Strings are written in Indonesian and passed through `t()` (`useT()` on screens, `translate()` on
+the server); `src/lib/i18n-en.ts` maps each to English, with `one|many` forms where a number
+decides. A string with no entry shows in Indonesian rather than breaking, and `npm run test:e2e`
+fails if any guest string or catalogue label (packages, looks, backgrounds, stickers, frames,
+default prompts) has none. Text the operator types (titles, prompts, the contact question) shows
+as typed, except the defaults, which have English.
+
+## Guest contacts and privacy (UU PDP)
+
+The page the QR opens can ask, optionally, for the guest's contact: name, WhatsApp and/or
+Instagram, and one multiple-choice question (*Tahu booth ini dari mana?* by default; both set in
+*Pengaturan → Berbagi & galeri*). Nothing is sent until the guest ticks consent to be contacted
+with promotions. Contacts are kept apart from the photos — the photo window does not delete them —
+and are listed in *Konsol → Laporan → Kontak tamu*, downloaded as CSV, and deleted one by one or all
+at once (behind `HAPUS`) when a guest asks.
+
+The page also says until when the photos are kept. Deleting them and taking them out of the
+gallery is the operator's job by default (the console's *Sesi* log, below). With *Pengaturan →
+Berbagi & galeri → Tamu bisa menghapus fotonya* on, the page offers *Hapus fotoku dari server*: after a
+confirmation, every photo, video and the sheet go (here and in R2), the session leaves the gallery
+and its QR page says the photos were deleted. The session and its payments stay, so revenue and
+counts still add up. Whoever holds the QR link can do this, as they can download the photos.
+
+## Promo codes (Konsol → Ringkasan → Kode promo)
+
+The operator makes codes: *Diskon %* (1–99%), *Potongan Rp*, or *Gratis*, each with an optional
+quota and last day, and a note for themselves. Guests tap *Kode promo* on the package screen (it
+shows only while a code is on and the event takes QRIS), type it, and see the price struck
+through and the new total. The server checks the code again when the session starts and works the
+price out itself; a cut never leaves less than Rp1.500 (QRIS's minimum) unless the code is
+*Gratis*, which skips payment altogether. A code used up between the check and the start is
+dropped with the reason. *Matikan* pauses a code; *Hapus* (asked first) removes it while the
+sessions that used it keep it. The payment screen names the code and the saving; *Laporan* lists
+codes used and the total discount; the CSV has both columns. A guest gets 20 tries per 10 minutes.
+
+## Sharing from the guest's phone
+
+The page the QR opens adds:
+
+- **Bagikan**: the phone's own share sheet with the sheet attached (WhatsApp, Instagram, …); a
+  phone that cannot share files shares the link, or copies it.
+- **WhatsApp**: opens WhatsApp with the link and a line about the event.
+- **Versi Story**: the sheet on a 1080x1920 card (a blurred copy behind it, the event's name
+  under it), made on the phone, to share or download.
+- **Jadikan GIF** under the live sheet, and **Boomerang** on each photo's clip: made on the server
+  with `ffmpeg` the first time a guest asks (`lib/motion.ts`; two at a time, so a queue of guests
+  never starves the booth) and kept as `fx-*` files next to the videos, which go with them when
+  videos expire. A boomerang plays forwards then back, twice, at double speed; a GIF is 360 px
+  wide at 12 fps. Without ffmpeg on the server (`FFMPEG_BIN`, else Homebrew or `/usr/bin`) the
+  buttons do not show.
 
 ## Reports (Konsol → Laporan)
 
@@ -158,6 +312,16 @@ sessions for Excel or Sheets; *Unduh foto acara* streams the running event's fin
 (or every photo and video, a folder per session) as a ZIP for the client. Past events have a
 ZIP link in *Acara sebelumnya*. *Sistem → Cadangan & ekspor* downloads a consistent copy of
 the database (`better-sqlite3`'s online backup) to keep off the booth laptop.
+
+## The database (Konsol → Data)
+
+`/operator/data` shows every table in `booth.db` the way a table editor does: the tables and
+their row counts on the left, 50 rows a page on the right, a search across every column, and a
+click on a column to sort by it. Stored photos, sheets, clips and frames show as thumbnails in
+their cell and open full size. A `session_id` or `event_id` jumps to that row, and a session's
+code to its photos. It is read-only: guest data is deleted from *Ringkasan* behind its
+confirmations. Table and column names come from SQLite's own catalogue, never from the URL
+(`lib/dataBrowser.ts`). Phones do not get the tab; the tables are too wide for one.
 
 ## Phones get the console
 
@@ -228,7 +392,8 @@ The design prints its own text, so the event name and date are not added. Deleti
 ## Printing: AirPrint to a Canon SELPHY
 
 With the event's printing set to **AirPrint**, the last screen shows *Cetak*: it opens the
-iPad's print sheet with one page per sheet paid for, each a full 4x6in board. Pick the SELPHY
+device's print sheet (AirPrint on an iPad; Mopria or Canon Print Service on Android) with one
+page per sheet paid for, each a full 4x6in board. Pick the SELPHY
 (CP1300/CP1500 support AirPrint) once; iOS remembers it. Safari always shows the print sheet
 — printing with no dialog at all needs the native app wrapper, which is not built yet.
 *Simulasi* keeps the timed progress bar for rehearsals without a printer.
@@ -247,7 +412,13 @@ R2_SECRET_ACCESS_KEY=...
 R2_BUCKET=snaplorebooth    # keep the bucket private; the booth signs every link
 ```
 
-## Running it on an iPad (no App Store)
+## Running it on a tablet (no app store)
+
+The booth is a web app: any tablet with a current browser runs it. An **Android tablet** (e.g.
+itel) uses Chrome: open the booth's address, allow the camera, and pin the tab with Android's
+*App pinning* (Settings → Security) so guests cannot leave it; the start button takes it full
+screen. Its camera is the tablet's own or a USB capture card the browser lists (many budget
+tablets list none — check at *Konsol → Kamera* first). On an **iPad**:
 
 For a booth you run yourself, the app does not need to be in the App Store. Once it is
 online at an HTTPS domain (see *Deploy to a VPS*):
@@ -293,8 +464,14 @@ the database and the photos.
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/status` | Paper estimate, printer state, counts; also runs the retention sweep |
-| `GET` `POST` | `/api/sessions` | List sessions / start one from a package + add-ons |
-| `GET` `PATCH` | `/api/sessions/[id]` | Read session with photos (contact details withheld) / update status, filter, `beauty`, template, `in_gallery`, `mirror` (refused once the sheet is made). The print count is fixed by what was paid |
+| `GET` `POST` | `/api/sessions` | List sessions / start one from a package + add-ons, and an optional promo `voucher` |
+| `GET` `PATCH` | `/api/sessions/[id]` | Read session with photos (contact details withheld) / update status, filter, `beauty`, template, `in_gallery`, `mirror`, `decor`, `background` and `picks` (the last four refused once the sheet is made). The print count is fixed by what was paid |
+| `POST` `GET` | `/api/sessions/[id]/extra` | `{"copies": n}` a QRIS code for n more sheets of a made sheet / poll it (the sheets are added when it is paid) |
+| `POST` | `/api/sessions/[id]/contact` | `{name, phone?, instagram?, answer?, consent: true}` the guest's contact |
+| `POST` | `/api/sessions/[id]/erase` | `{"confirm": true}` the guest deletes their photos and videos; the session and payments stay |
+| `GET` | `/api/vision/[file]` | MediaPipe's WebAssembly runtime for the AI backdrops |
+| `POST` | `/api/sessions/[id]/motion` | `{"kind":"gif"}` the live sheet as a GIF, `{"kind":"boomerang","index":n}` a photo's clip as a boomerang; made once with ffmpeg, then `{url}` |
+| `POST` | `/api/vouchers/check` | `{code, packageId, extraPrints}` → the code's label and the price with it (20 tries per 10 min per address) |
 | `DELETE` | `/api/sessions/[id]` | Discard a session the guest backed out of; refused once it has a photo, a sheet or a payment |
 | `POST` | `/api/sessions/[id]/photos` | Store one captured frame (`{index, dataUrl}`) |
 | `POST` | `/api/sessions/[id]/clips?index=n` | Store that shot's live clip (raw MP4/WebM body, 15MB max) |
@@ -317,7 +494,10 @@ the database and the photos.
 | `POST` | `/api/operator/sessions/[id]/reprint` | Record `{"copies": n}` sheets printed again, for the paper count (operator only) |
 | `GET` `PATCH` `DELETE` | `/api/operator/settings` | The booth settings and their defaults / change any subset (refused with the reason when invalid) / back to defaults (operator only) |
 | `GET` `POST` | `/api/operator/storage` | Disk use by kind / *Optimalkan sekarang* (operator only) |
-| `GET` | `/api/operator/export` | `?kind=csv&r=today\|7d\|30d\|event\|all` sessions as CSV; `?kind=zip&event=<id>[&all=1]` an event's sheets (or everything) as a ZIP; `?kind=db` a database backup (operator only) |
+| `GET` `POST` | `/api/operator/vouchers` | List promo codes with their use / make one: `{code, kind: percent\|amount\|free, value, max_uses?, expires_at?, note?}` (operator only) |
+| `DELETE` | `/api/operator/contacts` | `{"id"}` one guest contact / `{"all": true, "confirm": "HAPUS"}` all of them (operator only) |
+| `PATCH` `DELETE` | `/api/operator/vouchers/[code]` | `{"active": bool}` pause or resume a code / delete it (operator only) |
+| `GET` | `/api/operator/export` | `?kind=contacts` guest contacts as CSV; `?kind=csv&r=today\|7d\|30d\|event\|all` sessions as CSV; `?kind=zip&event=<id>[&all=1]` an event's sheets (or everything) as a ZIP; `?kind=db` a database backup (operator only) |
 | `POST` | `/api/camera/calibrate` | Automatic camera setup over USB; returns each setting found and what was done (operator only) |
 | `POST` | `/api/camera/focus` | `{ locked }`: focus once and keep it for every shot, or back to focusing per shot (operator only) |
 | `GET` | `/api/events/[slug]/gallery` | `{ ended, items }` for the event link; 404 when its gallery is off |
@@ -659,6 +839,8 @@ dashboard's payment records stay. Guests at the booth right now — unfinished s
 - **The booth needs internet when deployed.** The iPad loads the app and uploads photos to
   the VPS; bring a modem rather than relying on venue Wi-Fi.
 - **Email/SMS delivery has no guest screen.** The endpoint remains; nothing sends mail.
+- **Emoji stickers use the device's emoji font.** The same sticker looks like Apple's on an iPad
+  and Google's on Android; the badges and writing are drawn by the booth and look alike.
 - **Tethering needs the Mac (or a Linux box) at the booth.** gphoto2 runs on the server,
   so an iPad-only booth uses the Canon through an HDMI capture card on `browser` instead.
   The tethered path has been run end to end against a real EOS M50 (live view, stills,
@@ -666,4 +848,3 @@ dashboard's payment records stay. Guests at the booth right now — unfinished s
   is 480 × 320, so viewfinder and clips are softer than the stills.
 - Prices render through `formatPrice`, which renders the stored Rupiah amount with Indonesian
   thousands separators — adjust it if you move to another currency.
-# SnapLoreBooth

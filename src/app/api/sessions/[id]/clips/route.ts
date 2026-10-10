@@ -3,6 +3,7 @@ import { getConfig } from '@/lib/config';
 import { getSession, setClip } from '@/lib/db';
 import { sessionUnlocked } from '@/lib/payments';
 import { InvalidImageError, MAX_VIDEO_BYTES, saveVideo } from '@/lib/storage';
+import { shotCount } from '@/lib/picks';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,8 +23,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (!getConfig().capture.clips) return NextResponse.json({ error: 'video is switched off' }, { status: 409 });
 
   const index = Number(new URL(request.url).searchParams.get('index'));
-  if (!Number.isInteger(index) || index < 1 || index > session.shots) {
-    return NextResponse.json({ error: `index must be an integer between 1 and ${session.shots}` }, { status: 400 });
+  // The sheet's photos and any bonus ones to pick from.
+  if (!Number.isInteger(index) || index < 1 || index > shotCount(session)) {
+    return NextResponse.json({ error: `index must be an integer between 1 and ${shotCount(session)}` }, { status: 400 });
   }
 
   const declared = Number(request.headers.get('content-length') ?? 0);

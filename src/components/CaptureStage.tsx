@@ -3,15 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import GuestHeader from '@/components/guest/GuestHeader';
+import { useLang, useT } from '@/components/guest/lang';
 import { formatClock, useCountdown } from '@/components/guest/hooks';
 import { ArrowRight, Camera, Retry } from '@/components/guest/icons';
-import { beep, shutterSound, unlockSound } from '@/components/guest/sounds';
+import { beep, shutterSound, speak, unlockSound, unlockVoice } from '@/components/guest/sounds';
 import { CAMERA_DEVICE_KEY, CAMERA_SOURCE_KEY, readDeviceSetting as readSetting, shutterLagKey } from '@/components/guest/deviceKeys';
 import { TETHERED_FPS, useTetheredFeed } from '@/components/guest/useTetheredFeed';
 import type { CameraInfo } from '@/lib/camera/types';
 import { mediaUrl } from '@/lib/format';
 import { readEvents } from '@/lib/readEvents';
 import { readJson } from '@/lib/readJson';
+import { shotCount, slotOrder } from '@/lib/picks';
 import { boardLayout, composeStrip, recorderMimeType } from '@/lib/strip';
 import type { CustomFrame, Session } from '@/lib/types';
 
@@ -21,6 +23,8 @@ export interface CaptureSettings {
   countdown: number;
   /** Beep each second and click on the shutter. */
   sound: boolean;
+  /** Read the pose and say the last three seconds, where the device has an Indonesian voice. */
+  voice: boolean;
   /** How long each new photo is shown before the next countdown. */
   showMs: number;
   /** The whole photo session; when it ends, missing shots are taken and the guest moves on. */
@@ -64,6 +68,12 @@ type Phase = 'ready' | 'counting' | 'shooting' | 'showing' | 'review' | 'error' 
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** What the voice says on the last seconds; a beep covers any earlier ones. */
+const SPOKEN_COUNT: Record<number, string> = { 3: 'tiga', 2: 'dua', 1: 'satu' };
+const SPOKEN_COUNT_EN: Record<number, string> = { 3: 'three', 2: 'two', 1: 'one' };
+/** A pose is read out only when the countdown leaves time to say it before the numbers. */
+const POSE_READ_FROM = 5;
+
 interface Recording {
   recorder: MediaRecorder;
   done: Promise<Blob | null>;
@@ -77,6 +87,7 @@ export default function CaptureStage({
   frame,
   settings,
   showDate,
+  qr,
 }: {
   session: Session;
   payments: boolean;
@@ -86,10 +97,14 @@ export default function CaptureStage({
   frame: CustomFrame | null;
   settings: CaptureSettings;
   showDate: boolean;
+  /** The code a built-in frame prints in its footer; null prints none. */
+  qr: string | null;
 }) {
   const COUNT_FROM = settings.countdown;
   const POSES = settings.prompts;
   const router = useRouter();
+  const t = useT();
+  const lang = useLang();
   const videoRef = useRef<HTMLVideoElement>(null);
   const liveCanvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -98,6 +113,9 @@ export default function CaptureStage({
   const autoFinish = useRef(false);
 
   const slots = useMemo(() => Array.from({ length: session.shots }, (_, i) => i + 1), [session.shots]);
+  /** Every photo to shoot: the sheet's, then any bonus ones to pick the best from. */
+  const all = useMemo(() => Array.from({ length: shotCount(session) }, (_, i) => i + 1), [session]);
+  const picking = session.bonus > 0;
   const layout = useMemo(
     () => boardLayout(session.format, session.template, session.shots, frame),
     [session.format, session.template, session.shots, frame],
@@ -111,9 +129,12 @@ export default function CaptureStage({
   const [mirror, setMirror] = useState(session.mirror);
   const [savingMirror, setSavingMirror] = useState(false);
   const [shots, setShots] = useState<Record<number, string>>(initialShots);
+  /** Which photo goes in each hole, in order. Without bonus shots, simply the photos as shot. */
+  const [picks, setPicks] = useState<number[]>(() => slotOrder(session));
+  const [pickProblem, setPickProblem] = useState(false);
   const [queue, setQueue] = useState<number[]>([]);
   const [current, setCurrent] = useState<number | null>(null);
-  const [phase, setPhase] = useState<Phase>(() => (slots.every((n) => initialShots[n]) ? 'review' : 'ready'));
+  const [phase, setPhase] = useState<Phase>(() => (all.every((n) => initialShots[n]) ? 'review' : 'ready'));
   const [count, setCount] = useState(COUNT_FROM);
   const [flash, setFlash] = useState(false);
   const [snap, setSnap] = useState<string | null>(null);
@@ -130,7 +151,8 @@ export default function CaptureStage({
 
   // A tethered body streams live view from the server; a webcam or capture card does not.
   const tethered = camera?.serverLiveView === true;
-  const complete = slots.every((n) => shots[n]);
+  const complete = all.every((n) => shots[n]);
+  const picked = picks.length === session.shots && picks.every((n) => shots[n]);
 
   useTetheredFeed(liveCanvasRef, tethered && !cameraProblem, camera?.stillAspect ?? null);
 
@@ -174,9 +196,9 @@ export default function CaptureStage({
       .then((info) => {
         if (cancelled) return;
         setCamera(info);
-        if (info.serverLiveView && !info.ready) setCameraProblem(info.message ?? 'Kamera belum terhubung.');
+        if (info.serverLiveView && !info.ready) setCameraProblem(info.message ?? t('Kamera belum terhubung.'));
       })
-      .catch(() => !cancelled && setCameraProblem('Booth tidak bisa menghubungi kamera.'));
+      .catch(() => !cancelled && setCameraProblem(t('Booth tidak bisa menghubungi kamera.')));
     return () => {
       cancelled = true;
     };
@@ -186,7 +208,7 @@ export default function CaptureStage({
     if (camera === null || tethered) return;
     let cancelled = false;
     if (!navigator.mediaDevices) {
-      setCameraProblem('Kamera hanya bisa dipakai lewat HTTPS.');
+      setCameraProblem(t('Kamera hanya bisa dipakai lewat HTTPS.'));
       return;
     }
     const deviceId = readSetting(CAMERA_DEVICE_KEY);
@@ -201,7 +223,7 @@ export default function CaptureStage({
         streamRef.current = stream;
         if (videoRef.current) videoRef.current.srcObject = stream;
       })
-      .catch((err: unknown) => !cancelled && setCameraProblem(err instanceof Error ? err.message : 'Akses kamera ditolak.'));
+      .catch((err: unknown) => !cancelled && setCameraProblem(err instanceof Error ? err.message : t('Akses kamera ditolak.')));
 
     return () => {
       cancelled = true;
@@ -214,8 +236,8 @@ export default function CaptureStage({
   useEffect(() => {
     let cancelled = false;
     composeStrip(
-      slots.map((n) => shots[n] ?? null),
-      { format: session.format, filterId: 'original', templateId: session.template, eventName, capturedAt: new Date(session.created_at), frame, mirror, showDate },
+      slots.map((_, i) => (picks[i] !== undefined ? (shots[picks[i]] ?? null) : null)),
+      { format: session.format, filterId: 'original', templateId: session.template, eventName, capturedAt: new Date(session.created_at), frame, mirror, showDate, qr, lang },
       0.75,
     )
       .then((url) => !cancelled && setBoard(url))
@@ -223,7 +245,7 @@ export default function CaptureStage({
     return () => {
       cancelled = true;
     };
-  }, [shots, slots, session.format, session.template, session.created_at, eventName, frame, mirror, showDate]);
+  }, [shots, picks, slots, session.format, session.template, session.created_at, eventName, frame, mirror, showDate, qr, lang]);
 
   /** Starts recording the countdown, so every shot also gets its few seconds of video. */
   const startClip = useCallback(() => {
@@ -336,6 +358,7 @@ export default function CaptureStage({
     (indices: number[]) => {
       if (indices.length === 0) return;
       if (settings.sound) unlockSound();
+      if (settings.voice) unlockVoice();
       triggered.current = null;
       setFired(false);
       setSelected(null);
@@ -351,10 +374,34 @@ export default function CaptureStage({
   /** On to Gaya, where the guest picks the look and beauty and the sheet is made. */
   const finish = useCallback(async () => {
     setPhase('finishing');
+    setPickProblem(false);
+    if (picking) {
+      // A clock that ran out mid-choice fills the empty holes with the photos not yet chosen.
+      const chosen = picks.filter((n) => shots[n]).slice(0, session.shots);
+      const order = [...chosen, ...all.filter((n) => shots[n] && !chosen.includes(n))].slice(0, session.shots);
+      setPicks(order);
+      const res = await fetch(`/api/sessions/${session.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ picks: order }),
+      }).catch(() => null);
+      if (!res?.ok) {
+        setPickProblem(true);
+        setPhase('review');
+        return;
+      }
+    }
     // Give live clips a moment to finish uploading so the QR page has them.
     await Promise.race([clipChain.current, wait(CLIP_UPLOAD_WAIT_MS)]);
     router.push(`/gaya/${session.id}`);
-  }, [router, session.id]);
+  }, [all, picking, picks, router, session.id, session.shots, shots]);
+
+  /** Tapping a photo in the picker puts it in the next empty hole, or takes it out of its hole. */
+  const togglePick = (n: number) => {
+    if (phase !== 'review' || !shots[n]) return;
+    setSelected(null);
+    setPicks((list) => (list.includes(n) ? list.filter((p) => p !== n) : list.length < session.shots ? [...list, n] : list));
+  };
 
   const toggleMirror = async () => {
     const next = !mirror;
@@ -407,7 +454,7 @@ export default function CaptureStage({
       void stopClip();
       // A tethered body that cannot focus refuses to fire; the guest can usually fix that.
       const focus = err instanceof Error && /focus/i.test(err.message);
-      setShotProblem(focus ? 'Kamera belum bisa fokus. Mundur sedikit, lalu Coba lagi' : null);
+      setShotProblem(focus ? t('Kamera belum bisa fokus. Mundur sedikit, lalu Coba lagi') : null);
       setPhase('error');
     }
   }, [begin, current, queue, queueClipUpload, rememberLag, stopClip, takeStill, tethered]);
@@ -426,8 +473,13 @@ export default function CaptureStage({
 
   useEffect(() => {
     if (phase !== 'counting') return;
-    // Higher on the last second, so the guest hears the moment coming.
-    if (settings.sound && count > 0) beep(count === 1 ? 1320 : 880);
+    if (count > 0) {
+      const pose = count === COUNT_FROM && COUNT_FROM >= POSE_READ_FROM ? t(POSES[((current ?? 1) - 1) % POSES.length]) : null;
+      const numbers = lang === 'en' ? SPOKEN_COUNT_EN : SPOKEN_COUNT;
+      const spoken = settings.voice && (pose ? speak(pose, lang) : count in numbers && speak(numbers[count], lang));
+      // Higher on the last second, so the guest hears the moment coming.
+      if (settings.sound && !spoken) beep(count === 1 ? 1320 : 880);
+    }
     if (count <= 0) {
       setPhase('shooting');
       triggerRef.current();
@@ -448,13 +500,14 @@ export default function CaptureStage({
 
   // When the session clock runs out, the sheet finishes itself as soon as it is whole.
   useEffect(() => {
-    if (phase === 'review' && autoFinish.current && complete) void finish();
-  }, [complete, finish, phase]);
+    // Not again after a failed save of the picks: the guest presses on themselves then.
+    if (phase === 'review' && autoFinish.current && complete && !pickProblem) void finish();
+  }, [complete, finish, phase, pickProblem]);
 
   const onSessionEnd = () => {
     autoFinish.current = true;
     if (phase === 'ready' || phase === 'review' || phase === 'error') {
-      const missing = slots.filter((n) => !shots[n]);
+      const missing = all.filter((n) => !shots[n]);
       if (missing.length > 0) begin(missing);
     }
   };
@@ -462,13 +515,16 @@ export default function CaptureStage({
   onSessionEndRef.current = onSessionEnd;
   const left = useCountdown(settings.sessionSeconds, true, () => onSessionEndRef.current());
 
-  const tapSlot = (index: number) => {
-    if (phase !== 'review' || !shots[index] || !settings.retake) return;
+  /** A hole on the sheet: the first tap selects its photo, a second retakes that photo. */
+  const tapSlot = (hole: number) => {
+    const index = picks[hole - 1];
+    if (phase !== 'review' || index === undefined || !shots[index] || !settings.retake) return;
     if (selected === index) begin([index]);
     else setSelected(index);
   };
 
-  const shotNumber = current ?? slots.find((n) => !shots[n]) ?? session.shots;
+  const shotNumber = current ?? all.find((n) => !shots[n]) ?? session.shots;
+  const total = shotCount(session);
   // Uploaded frames can mix photo shapes, so the viewfinder takes the shape of the shot being taken.
   const activeSlot = layout.slots[shotNumber - 1] ?? layout.slots[0];
   const slotAspect = activeSlot.w / activeSlot.h;
@@ -487,7 +543,7 @@ export default function CaptureStage({
             disabled={savingMirror || !(phase === 'ready' || phase === 'review' || phase === 'error')}
           >
             <span className="cap2-switch" />
-            Mode cermin
+            {t('Mode cermin')}
           </button>
           <div className="fit cq">
             <div className="vf" style={{ aspectRatio: String(slotAspect), width: `min(100cqw, calc(100cqh * ${slotAspect}))` }}>
@@ -503,7 +559,7 @@ export default function CaptureStage({
               )}
               {tethered && phase === 'shooting' && !fired && (
                 <div className="vf-count" aria-live="assertive">
-                  <span className="vf-hold">Tahan!</span>
+                  <span className="vf-hold">{t('Tahan!')}</span>
                 </div>
               )}
               {(phase === 'counting' || (phase === 'shooting' && !tethered)) && <span className="vf-rec">● REC</span>}
@@ -511,16 +567,42 @@ export default function CaptureStage({
               {snap && (
                 <div className="vf-snap">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={snap} alt={`Foto ${current}`} style={{ transform: mirror ? 'scaleX(-1)' : undefined }} />
+                  <img src={snap} alt={t('Foto {n}', { n: current ?? '' })} style={{ transform: mirror ? 'scaleX(-1)' : undefined }} />
                 </div>
               )}
             </div>
           </div>
+          {picking && (phase === 'review' || phase === 'finishing') && (
+            <div className="pick" role="group" aria-label={t('Pilih foto terbaik')}>
+              <p className="pick-head">{t('Pilih {n} foto terbaik · ketuk untuk memilih atau melepas', { n: session.shots })}</p>
+              <div className="pick-grid" data-count={total}>
+                {all.map((n) => {
+                  const hole = picks.indexOf(n);
+                  return (
+                    <button
+                      key={n}
+                      className="pick-photo"
+                      data-picked={hole >= 0}
+                      onClick={() => togglePick(n)}
+                      disabled={!shots[n] || phase !== 'review'}
+                      aria-label={hole >= 0 ? t('Foto {n}, di tempat {hole}', { n, hole: hole + 1 }) : t('Foto {n}', { n })}
+                    >
+                      {shots[n] && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={shots[n]} alt="" style={{ transform: mirror ? 'scaleX(-1)' : undefined }} draggable={false} />
+                      )}
+                      <span className="pick-badge">{hole >= 0 ? hole + 1 : ''}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="cap2-sheet">
           <p className="cap2-sheet-hint" data-active={phase === 'review'}>
-            {phase === 'review' && settings.retake ? 'Klik 2 kali pada foto untuk retake' : 'Frame kamu'}
+            {phase === 'review' && settings.retake ? t('Klik 2 kali pada foto untuk retake') : t('Frame kamu')}
           </p>
           <div className="fit cq">
             <div className="sheet" style={{ aspectRatio: `${layout.width} / ${layout.height}`, width: `min(100cqw, calc(100cqh * ${layout.width / layout.height}))` }}>
@@ -530,15 +612,17 @@ export default function CaptureStage({
               )}
               {layout.slots.map((slot, i) => {
                 const n = i + 1;
+                const photo = picks[i];
+                const filled = photo !== undefined && !!shots[photo];
                 const active = n === current && phase !== 'review';
-                const canRetake = phase === 'review' && !!shots[n] && settings.retake;
+                const canRetake = phase === 'review' && filled && settings.retake;
                 return (
                   <button
                     key={n}
                     className="slot"
                     data-active={active}
-                    data-selected={selected === n}
-                    data-filled={!!shots[n]}
+                    data-selected={photo !== undefined && selected === photo}
+                    data-filled={filled}
                     disabled={!canRetake}
                     onClick={() => tapSlot(n)}
                     style={{
@@ -548,9 +632,11 @@ export default function CaptureStage({
                       height: pct(slot.h, layout.height),
                       transform: slot.angle ? `rotate(${slot.angle}deg)` : undefined,
                     }}
-                    aria-label={selected === n ? `Foto ${n} terpilih, klik lagi untuk retake` : shots[n] ? `Pilih foto ${n}` : `Foto ${n}`}
+                    aria-label={
+                      photo !== undefined && selected === photo ? t('Foto {n} terpilih, klik lagi untuk retake', { n }) : filled ? t('Pilih foto {n}', { n }) : t('Foto {n}', { n })
+                    }
                   >
-                    {!shots[n] && <span className="slot-num">{n}</span>}
+                    {!filled && <span className="slot-num">{n}</span>}
                   </button>
                 );
               })}
@@ -564,49 +650,59 @@ export default function CaptureStage({
           <div className="g-bar-label">
             {phase === 'review'
               ? selected !== null
-                ? `Foto ${selected} terpilih`
-                : complete
-                  ? 'Semua foto sudah ada'
-                  : 'Masih ada foto kosong'
-              : `Foto ${shotNumber} dari ${session.shots}`}
+                ? t('Foto {n} terpilih', { n: selected })
+                : !complete
+                  ? t('Masih ada foto kosong')
+                  : picking
+                    ? t('{n} dari {total} foto dipilih', { n: picks.length, total: session.shots })
+                    : t('Semua foto sudah ada')
+              : shotNumber > session.shots
+                ? t('Foto bonus {n} dari {total}', { n: shotNumber - session.shots, total: session.bonus })
+                : t('Foto {n} dari {total}', { n: shotNumber, total })}
           </div>
           <div className="g-bar-value cap2-hint">
             {phase === 'ready'
-              ? `${session.shots} pose · ${COUNT_FROM} detik tiap foto`
+              ? picking
+                ? t('{total} foto, pilih {n} terbaik · {s} detik tiap foto', { total, n: session.shots, s: COUNT_FROM })
+                : t('{n} pose · {s} detik tiap foto', { n: session.shots, s: COUNT_FROM })
               : phase === 'review'
-                ? !settings.retake
+                ? picking && complete && !picked
+                  ? t('Ketuk foto di kiri untuk mengisi tempat kosong')
+                  : !settings.retake
                   ? complete
-                    ? 'Lanjut pilih gaya'
-                    : 'Foto yang kosong diambil lagi'
+                    ? t('Lanjut pilih gaya')
+                    : t('Foto yang kosong diambil lagi')
                   : selected !== null
-                    ? 'Klik sekali lagi untuk retake'
-                    : 'Klik 2 kali pada foto untuk retake'
+                    ? t('Klik sekali lagi untuk retake')
+                    : t('Klik 2 kali pada foto untuk retake')
                 : phase === 'finishing'
-                  ? 'Menyusun fotomu…'
+                  ? t('Menyusun fotomu…')
+                  : pickProblem
+                    ? t('Pilihan belum tersimpan, coba lagi')
                   : phase === 'error'
-                    ? (shotProblem ?? `Foto ${current} belum tersimpan`)
-                    : POSES[((current ?? 1) - 1) % POSES.length]}
+                    ? (shotProblem ?? t('Foto {n} belum tersimpan', { n: current ?? '' }))
+                    : t(POSES[((current ?? 1) - 1) % POSES.length])}
           </div>
         </div>
         <span className="g-spacer" />
         {phase === 'ready' && (
-          <button className="g-cta" onClick={() => begin(slots.filter((n) => !shots[n]))} disabled={camera === null || !!cameraProblem}>
-            <Camera /> Mulai foto
+          <button className="g-cta" onClick={() => begin(all.filter((n) => !shots[n]))} disabled={camera === null || !!cameraProblem}>
+            <Camera /> {t('Mulai foto')}
           </button>
         )}
         {phase === 'error' && current !== null && (
           <button className="g-cta" onClick={() => begin([current, ...queue])}>
-            <Retry /> Coba lagi
+            <Retry /> {t('Coba lagi')}
           </button>
         )}
         {phase === 'review' && !complete && (
-          <button className="g-cta" onClick={() => begin(slots.filter((n) => !shots[n]))}>
-            <Camera /> Foto yang kosong
+          <button className="g-cta" onClick={() => begin(all.filter((n) => !shots[n]))}>
+            <Camera /> {t('Foto yang kosong')}
           </button>
         )}
         {(phase === 'review' || phase === 'finishing') && complete && (
-          <button className="g-cta" onClick={() => void finish()} disabled={phase === 'finishing'}>
-            {phase === 'finishing' ? 'Menyimpan…' : 'Pilih gaya'} <ArrowRight />
+          <button className="g-cta" onClick={() => void finish()} disabled={phase === 'finishing' || !picked}>
+            {phase === 'finishing' ? t('Menyimpan…') : t('Pilih gaya')} <ArrowRight />
           </button>
         )}
       </div>
@@ -614,8 +710,8 @@ export default function CaptureStage({
       {cameraProblem && (
         <div className="cap-problem">
           <div>
-            <h1 className="g-title">Kameranya lagi istirahat sebentar</h1>
-            <p className="g-lead">Panggil petugas booth ya — sesimu aman dan tidak hilang.</p>
+            <h1 className="g-title">{t('Kameranya lagi istirahat sebentar')}</h1>
+            <p className="g-lead">{t('Panggil petugas booth ya — sesimu aman dan tidak hilang.')}</p>
             <button
               className="g-cta"
               onClick={() => {
@@ -624,7 +720,7 @@ export default function CaptureStage({
                 setReloadKey((k) => k + 1);
               }}
             >
-              <Retry /> Coba lagi
+              <Retry /> {t('Coba lagi')}
             </button>
             <p className="mono" style={{ marginTop: 12 }}>{cameraProblem}</p>
             {camera?.serverLiveView && (

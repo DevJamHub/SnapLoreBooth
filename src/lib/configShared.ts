@@ -23,6 +23,12 @@ export interface BoothConfig {
     chips: boolean;
     /** Holding the logo this long opens the console. */
     holdSeconds: number;
+    /** The drifting polaroids show the newest sheets guests let into the gallery. */
+    showcase: boolean;
+    /** The start button puts the browser full screen (Android tablets have no Guided Access). */
+    fullscreen: boolean;
+    /** Guests can switch the booth to English. */
+    english: boolean;
   };
   packages: {
     /** Package ids guests can pick, in the usual order. */
@@ -57,11 +63,17 @@ export interface BoothConfig {
      * uploaded frame on offer always gets them, so a guest is never left without a frame.
      */
     builtin: boolean;
+    /** A QR to the guest's photos and videos, printed in a built-in frame's footer. */
+    qr: boolean;
   };
   capture: {
     /** Beeps on the countdown and a shutter sound. */
     sound: boolean;
+    /** A voice reads the pose and counts the last three seconds, where the device speaks Indonesian. */
+    voice: boolean;
     retake: boolean;
+    /** Photos shot beyond the sheet's holes; the guest picks the best for the sheet. */
+    bonus: number;
     /** One line per shot, repeating; shown under the countdown. */
     prompts: string[];
     /** Record each countdown as a few seconds of video. */
@@ -74,6 +86,10 @@ export interface BoothConfig {
     defaultFilter: string;
     beauty: boolean;
     defaultBeauty: string;
+    /** Stickers, writing and drawing on the sheet, on the Gaya screen. */
+    decor: boolean;
+    /** AI backdrops behind the guests (on the device, no green screen), on the Gaya screen. */
+    backgrounds: boolean;
   };
   share: {
     /** The QR to take the photos home. */
@@ -86,6 +102,16 @@ export interface BoothConfig {
     liveVideo: boolean;
     /** A line for the guest on the page the QR opens; empty shows none. */
     message: string;
+    /** After printing, offer more sheets paid by QRIS ("Cetak lagi"). */
+    upsell: boolean;
+    /** The page the QR opens asks (optionally, with consent) for the guest's contact. */
+    contacts: boolean;
+    /** One question asked with it, e.g. where they heard of the booth; empty asks none. */
+    question: string;
+    /** The answers offered for it. */
+    answers: string[];
+    /** The guest can delete their own photos and videos from that page. */
+    erase: boolean;
   };
   storage: {
     /** Photos, sheets and the session record are deleted after this. */
@@ -124,4 +150,5 @@ export const CHOICES = {
   retentionHours: [6, 12, 24, 72, 168, 336, 720],
   maxEdge: [0, 3000, 2400, 1800],
   videoQuality: ['hemat', 'standar', 'tinggi'] as VideoQuality[],
+  bonus: [0, 1, 2, 4],
 };

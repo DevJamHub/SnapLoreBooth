@@ -6,6 +6,7 @@ import EventPanel from '@/components/EventPanel';
 import GuestDataPanel from '@/components/GuestDataPanel';
 import OperatorHeader from '@/components/OperatorHeader';
 import PrinterPanel from '@/components/PrinterPanel';
+import PromoPanel from '@/components/PromoPanel';
 import SessionLog from '@/components/SessionLog';
 import { boothStatus, revenueToday, sessionCounts, sessionLog } from '@/lib/db';
 import { currentEvent, listEvents, priceOf } from '@/lib/events';
@@ -14,6 +15,7 @@ import { ADDONS, PACKAGES, formatPrice } from '@/lib/packages';
 import { paymentsEnabled } from '@/lib/payments';
 import { publicBaseUrl } from '@/lib/publicUrl';
 import { BULK_CONFIRM_FROM, PURGE_CONFIRMATION, guestDataUsage, isSessionActive, retentionHours } from '@/lib/retention';
+import { listVouchers } from '@/lib/vouchers';
 import { isTestMode } from '@/lib/xendit';
 
 export const dynamic = 'force-dynamic';
@@ -138,7 +140,7 @@ export default async function OperatorPage({ searchParams }: { searchParams: Pro
             </span>
           </div>
           {devices.length === 0 ? (
-            <p className="op-muted">Belum ada layar booth yang aktif. Buka booth di iPad atau laptop; muncul di sini dalam 30 detik.</p>
+            <p className="op-muted">Belum ada layar booth yang aktif. Buka booth di tablet atau laptop; muncul di sini dalam 30 detik.</p>
           ) : (
             <div className="op-list">
               {devices.map((d) => (
@@ -191,6 +193,7 @@ export default async function OperatorPage({ searchParams }: { searchParams: Pro
 
         <aside className="op-side">
           <EventPanel event={event} prices={prices} xenditReady={!!process.env.XENDIT_SECRET_KEY} />
+          <PromoPanel initial={listVouchers()} payments={payments} />
           <EventArchive events={pastEvents} confirmWord={PURGE_CONFIRMATION} />
           <GuestDataPanel sessions={usage.sessions} bytes={usage.bytes} retentionHours={retentionHours()} confirmWord={PURGE_CONFIRMATION} />
         </aside>

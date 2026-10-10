@@ -1,8 +1,12 @@
 import { NextResponse } from 'next/server';
 import { getConfig } from '@/lib/config';
 import { discardSession, getSession, listPhotos, updateSession } from '@/lib/db';
-import { frameById } from '@/lib/frames';
+import { BACKGROUNDS, NO_BACKGROUND } from '@/lib/backgrounds';
+import { DecorInputError, parseDecor } from '@/lib/decor';
+import { frameById, frameForSession } from '@/lib/frames';
 import { BEAUTY, FILTERS, TEMPLATES } from '@/lib/packages';
+import { validPicks } from '@/lib/picks';
+import { boardLayout } from '@/lib/layout';
 import type { SessionStatus } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -61,6 +65,34 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     // The printed sheet is final; flipping now would make the QR page disagree with the paper.
     if (session.strip_file) return NextResponse.json({ error: 'sheet already made' }, { status: 409 });
     patch.mirror = body.mirror;
+  }
+  if (body.decor !== undefined) {
+    if (!style.decor && body.decor !== null && !(Array.isArray(body.decor) && body.decor.length === 0)) {
+      return NextResponse.json({ error: 'stickers are switched off' }, { status: 400 });
+    }
+    // Like the mirror: once the sheet is made, the print is what the QR page must show.
+    if (session.strip_file) return NextResponse.json({ error: 'sheet already made' }, { status: 409 });
+    try {
+      const layout = boardLayout(session.format, session.template, session.shots, frameForSession(session));
+      patch.decor = parseDecor(body.decor, layout);
+    } catch (error) {
+      if (error instanceof DecorInputError) return NextResponse.json({ error: error.message }, { status: 400 });
+      throw error;
+    }
+  }
+  if (body.background !== undefined) {
+    const id = String(body.background);
+    if (id !== NO_BACKGROUND && !BACKGROUNDS.some((b) => b.id === id)) return NextResponse.json({ error: 'unknown background' }, { status: 400 });
+    if (!style.backgrounds && id !== NO_BACKGROUND) return NextResponse.json({ error: 'backgrounds are switched off' }, { status: 400 });
+    if (session.strip_file) return NextResponse.json({ error: 'sheet already made' }, { status: 409 });
+    patch.background = id;
+  }
+  if (body.picks !== undefined) {
+    // Like the decorations: the photos on a made sheet are what the QR page must show.
+    if (session.strip_file) return NextResponse.json({ error: 'sheet already made' }, { status: 409 });
+    const picks = validPicks(body.picks, session, new Set(listPhotos(id).map((p) => p.idx)));
+    if (!picks) return NextResponse.json({ error: `picks must be ${session.shots} different photos that were shot` }, { status: 400 });
+    patch.picks = picks;
   }
   if (body.in_gallery !== undefined) {
     if (typeof body.in_gallery !== 'boolean') return NextResponse.json({ error: 'in_gallery must be a boolean' }, { status: 400 });

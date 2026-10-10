@@ -2,8 +2,9 @@
 
 /**
  * The booth's few sounds, synthesised with Web Audio so there are no files to load: a beep per
- * countdown second and a shutter click. Browsers only allow sound after a tap, so the first
- * tap (Mulai foto) unlocks it; until then every sound is silently skipped.
+ * countdown second and a shutter click, and a voice from the device's own speech engine.
+ * Browsers only allow sound after a tap, so the first tap (Mulai foto) unlocks it; until then
+ * every sound is silently skipped.
  */
 let context: AudioContext | null = null;
 
@@ -30,6 +31,41 @@ export function beep(frequency = 880, ms = 140, volume = 0.18) {
   tone.connect(gain).connect(context.destination);
   tone.start(now);
   tone.stop(now + ms / 1000 + 0.02);
+}
+
+/**
+ * A voice for the guest's language on this device, if it has one (iPadOS has Indonesian
+ * Damayanti; Android has Google's when its speech data is installed). Indonesian read by an
+ * English voice sounds wrong, so without one the booth keeps to its beeps.
+ */
+function voiceFor(lang: string): SpeechSynthesisVoice | null {
+  if (typeof speechSynthesis === 'undefined') return null;
+  const match = new RegExp(`^${lang}([-_]|$)`, 'i');
+  const voices = speechSynthesis.getVoices();
+  return voices.find((v) => match.test(v.lang) && v.localService) ?? voices.find((v) => match.test(v.lang)) ?? null;
+}
+
+/** Call from a tap: iOS only lets speech start inside one, and Chrome loads its voices late. */
+export function unlockVoice() {
+  if (typeof speechSynthesis === 'undefined') return;
+  speechSynthesis.getVoices();
+  const warm = new SpeechSynthesisUtterance(' ');
+  warm.volume = 0;
+  speechSynthesis.speak(warm);
+}
+
+/** Says `text` now in `lang`, cutting off whatever was being said. False when there is no voice to say it. */
+export function speak(text: string, lang = 'id'): boolean {
+  const voice = voiceFor(lang);
+  if (!voice) return false;
+  speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.voice = voice;
+  utterance.lang = voice.lang;
+  utterance.rate = 1.05;
+  utterance.pitch = 1.1;
+  speechSynthesis.speak(utterance);
+  return true;
 }
 
 /** A short burst of filtered noise: the click of a shutter. */

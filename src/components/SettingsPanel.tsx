@@ -148,6 +148,7 @@ export default function SettingsPanel({
   const [saved, setSaved] = useState(initial);
   const [draft, setDraft] = useState(initial);
   const [prompts, setPrompts] = useState(initial.capture.prompts.join('\n'));
+  const [answers, setAnswers] = useState(initial.share.answers.join('\n'));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -172,6 +173,7 @@ export default function SettingsPanel({
     setSaved(config);
     setDraft(config);
     setPrompts(config.capture.prompts.join('\n'));
+    setAnswers(config.share.answers.join('\n'));
   };
 
   const save = async () => {
@@ -261,6 +263,15 @@ export default function SettingsPanel({
           <Row label="Info di bawah layar" hint="Harga mulai, QRIS, langsung dicetak, simpan ke HP.">
             <Switch label="Info di bawah layar" checked={d.standby.chips} onChange={(v) => set('standby', 'chips', v)} />
           </Row>
+          <Row label="Bahasa Inggris" hint="Tombol English di layar awal dan ID/EN di layar paket. Tamu berikutnya kembali ke bahasa Indonesia. Teks yang Anda ubah sendiri (judul, arahan pose) tampil apa adanya.">
+            <Switch label="Bahasa Inggris" checked={d.standby.english} onChange={(v) => set('standby', 'english', v)} />
+          </Row>
+          <Row label="Layar penuh" hint="Tombol mulai membuat browser layar penuh (bilah alamat hilang). Untuk tablet Android; di iPad pakai Guided Access atau Add to Home Screen.">
+            <Switch label="Layar penuh" checked={d.standby.fullscreen} onChange={(v) => set('standby', 'fullscreen', v)} />
+          </Row>
+          <Row label="Foto tamu di layar awal" hint="Polaroid yang melayang diganti lembar foto tamu terbaru. Hanya foto yang masuk galeri acara, dan hanya saat galeri acara menyala.">
+            <Switch label="Foto tamu di layar awal" checked={d.standby.showcase} onChange={(v) => set('standby', 'showcase', v)} />
+          </Row>
           <Row label="Buka konsol dari booth" hint="Tahan logo di layar awal selama ini.">
             <Segments
               value={d.standby.holdSeconds}
@@ -295,6 +306,12 @@ export default function SettingsPanel({
           <Row label="Tanggal di bingkai bawaan">
             <Switch label="Tanggal di bingkai bawaan" checked={d.sheet.date} onChange={(v) => set('sheet', 'date', v)} />
           </Row>
+          <Row
+            label="QR di cetakan"
+            hint="QR kecil di pojok bawah bingkai bawaan (kecuali Polos): tamu scan dari kertasnya untuk foto & video. Ikut mati kalau QR simpan ke HP dimatikan. Frame upload memakai desainnya sendiri."
+          >
+            <Switch label="QR di cetakan" checked={d.sheet.qr} onChange={(v) => set('sheet', 'qr', v)} />
+          </Row>
         </Card>
 
         <Card id="flow" title="Alur & waktu" intro="Batas waktu tiap layar. Saat habis, booth lanjut sendiri dengan pilihan yang ada.">
@@ -325,6 +342,9 @@ export default function SettingsPanel({
           <Row label="Suara" hint="Bip tiap detik hitung mundur dan bunyi rana. Pastikan volume perangkat booth menyala.">
             <Switch label="Suara" checked={d.capture.sound} onChange={(v) => set('capture', 'sound', v)} />
           </Row>
+          <Row label="Suara pemandu" hint="Membacakan arahan pose (hitung mundur 5 detik ke atas) dan “tiga, dua, satu”. Hanya di perangkat yang punya suara bahasa Indonesia; selain itu tetap bip.">
+            <Switch label="Suara pemandu" checked={d.capture.voice} onChange={(v) => set('capture', 'voice', v)} />
+          </Row>
           <Row label="Hitung mundur tiap foto">
             <Segments value={d.flow.countdown} options={CHOICES.countdown.map((n) => ({ value: n, label: `${n} dtk` }))} onChange={(v) => set('flow', 'countdown', v)} />
           </Row>
@@ -333,6 +353,13 @@ export default function SettingsPanel({
               value={d.flow.showTenths}
               options={[8, 12, 20, 30].map((n) => ({ value: n, label: `${n / 10} dtk` }))}
               onChange={(v) => set('flow', 'showTenths', v)}
+            />
+          </Row>
+          <Row label="Foto bonus" hint="Tamu memotret lebih banyak dari tempat di lembar, lalu memilih foto terbaik untuk dicetak. Foto bonus tetap bisa diunduh lewat QR.">
+            <Segments
+              value={d.capture.bonus}
+              options={CHOICES.bonus.map((n) => ({ value: n, label: n ? `+${n} foto` : 'Tidak' }))}
+              onChange={(v) => set('capture', 'bonus', v)}
             />
           </Row>
           <Row label="Tamu boleh foto ulang" hint="Klik 2 kali pada foto untuk mengulang.">
@@ -374,7 +401,7 @@ export default function SettingsPanel({
           )}
         </Card>
 
-        <Card id="style" title="Gaya & beauty" intro="Pilihan di layar Gaya, setelah foto. Kalau hanya Asli dan beauty mati, layar ini dilewati.">
+        <Card id="style" title="Gaya & beauty" intro="Pilihan di layar Gaya, setelah foto. Kalau hanya Asli, beauty mati, dan stiker mati, layar ini dilewati.">
           <Row label="Gaya warna" hint="Asli selalu ada.">
             <Checks options={FILTERS.map((f) => ({ id: f.id, label: f.label }))} value={d.style.filters} locked={['original']} onChange={(v) => set('style', 'filters', v)} />
           </Row>
@@ -395,6 +422,12 @@ export default function SettingsPanel({
               <Segments value={d.style.defaultBeauty} options={BEAUTY.map((b) => ({ value: b.id, label: b.label }))} onChange={(v) => set('style', 'defaultBeauty', v)} />
             </Row>
           )}
+          <Row label="Latar AI" hint="Tab Latar di layar Gaya: AI di perangkat memisahkan tamu dari latarnya dan mengganti latar (Studio, Pink Pastel, Langit, …) tanpa green screen. Untuk foto cetak; video live tetap latar asli.">
+            <Switch label="Latar AI" checked={d.style.backgrounds} onChange={(v) => set('style', 'backgrounds', v)} />
+          </Row>
+          <Row label="Stiker & coretan" hint="Tab Stiker, Tulisan, dan Gambar di layar Gaya: tamu menempel stiker, menulis, dan menggambar di lembar fotonya. Ikut tercetak dan masuk video.">
+            <Switch label="Stiker & coretan" checked={d.style.decor} onChange={(v) => set('style', 'decor', v)} />
+          </Row>
         </Card>
 
         <Card id="share" title="Berbagi & galeri" intro="Galeri acara sendiri dinyalakan per acara di Ringkasan.">
@@ -407,8 +440,44 @@ export default function SettingsPanel({
           <Row label="Tamu bisa memilih" hint="Tombol “Tampilkan di galeri acara” di layar cetak.">
             <Switch label="Tamu bisa memilih" checked={d.share.galleryChoice} onChange={(v) => set('share', 'galleryChoice', v)} />
           </Row>
+          <Row label="Tawarkan cetak lagi" hint="Setelah foto tercetak, tamu bisa beli lembar tambahan lewat QRIS (harga +1 cetak acara, maksimal sesuai Paket & cetak). Hanya saat acara memakai QRIS.">
+            <Switch label="Tawarkan cetak lagi" checked={d.share.upsell} onChange={(v) => set('share', 'upsell', v)} />
+          </Row>
           <Row label="Video satu lembar" hint="Semua video foto diputar bersama di dalam bingkai. Butuh video per foto.">
             <Switch label="Video satu lembar" checked={d.share.liveVideo} onChange={(v) => set('share', 'liveVideo', v)} />
+          </Row>
+          <Row label="Kontak tamu" hint="Di halaman QR, tamu boleh meninggalkan nama, WhatsApp, dan Instagram — hanya dengan centang persetujuan (UU PDP). Lihat dan unduh di Laporan.">
+            <Switch label="Kontak tamu" checked={d.share.contacts} onChange={(v) => set('share', 'contacts', v)} />
+          </Row>
+          {d.share.contacts && (
+            <>
+              <Row label="Pertanyaan untuk tamu" hint="Satu pertanyaan pilihan ganda bersama kontak. Kosongkan untuk tidak bertanya.">
+                <input className="field" value={d.share.question} maxLength={80} onChange={(e) => set('share', 'question', e.target.value)} />
+              </Row>
+              {d.share.question && (
+                <Row label="Pilihan jawaban" hint="Satu baris per pilihan, maksimal 8.">
+                  <textarea
+                    className="field op-textarea"
+                    rows={5}
+                    value={answers}
+                    onChange={(e) => {
+                      setAnswers(e.target.value);
+                      set(
+                        'share',
+                        'answers',
+                        e.target.value
+                          .split('\n')
+                          .map((l) => l.trim())
+                          .filter(Boolean),
+                      );
+                    }}
+                  />
+                </Row>
+              )}
+            </>
+          )}
+          <Row label="Tamu bisa menghapus fotonya" hint="Tombol “Hapus fotoku dari server” di halaman QR. Catatan pembayaran tetap tersimpan.">
+            <Switch label="Tamu bisa menghapus fotonya" checked={d.share.erase} onChange={(v) => set('share', 'erase', v)} />
           </Row>
           <Row label="Pesan di halaman unduhan" hint="Tampil untuk tamu yang scan QR, mis. ucapan terima kasih atau akun Instagram. Boleh kosong.">
             <input

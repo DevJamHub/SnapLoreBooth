@@ -1,4 +1,6 @@
 import { headers } from 'next/headers';
+import QRCode from 'qrcode';
+import { getConfig, type BoothConfig } from './config';
 
 /** cloudflared serves its metrics on the first free port of these; a quick tunnel names itself there. */
 const TUNNEL_METRICS_PORTS = [20241, 20242, 20243, 20244, 20245];
@@ -60,4 +62,20 @@ export async function publicBaseUrl(): Promise<string> {
     if (tunnel) return tunnel;
   }
   return `${headerList.get('x-forwarded-proto') ?? 'http'}://${host}`;
+}
+
+/** The page a guest's QR opens, and the code itself as a PNG data URL. */
+export async function downloadQr(sessionId: string): Promise<{ url: string; qr: string }> {
+  const url = `${await publicBaseUrl()}/d/${sessionId}`;
+  const qr = await QRCode.toDataURL(url, { margin: 1, width: 480, color: { dark: '#181816', light: '#ffffff' } });
+  return { url, qr };
+}
+
+/**
+ * The code a built-in frame prints in its footer, or null when the operator prints none — also
+ * when guests get no QR at all (an event that only prints).
+ */
+export async function printedQr(sessionId: string, config: BoothConfig = getConfig()): Promise<string | null> {
+  if (!config.sheet.qr || !config.share.qr) return null;
+  return (await downloadQr(sessionId)).qr;
 }

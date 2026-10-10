@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { FrameFileError, frameGuide, prepareFrame, type PreparedFrame } from '@/lib/frameDesign';
 import { PACKAGES, UNSORTED_THEME } from '@/lib/packages';
+import { sheetSize } from '@/lib/layout';
 import { composeStrip } from '@/lib/strip';
 import type { CustomFrame } from '@/lib/types';
 
@@ -227,7 +228,7 @@ export default function FrameManager({ frames }: { frames: CustomFrame[] }) {
 
           {prepared && (
             <>
-              <div className="frame-preview">
+              <div className="frame-preview" style={{ aspectRatio: `${sheetSize(prepared.format).width} / ${sheetSize(prepared.format).height}` }}>
                 {preview ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={preview} alt="Pratinjau frame" />
@@ -240,8 +241,8 @@ export default function FrameManager({ frames }: { frames: CustomFrame[] }) {
                       key={i}
                       className="frame-slot-num"
                       style={{
-                        left: `${((slot.x + slot.w / 2) / 1200) * 100}%`,
-                        top: `${((slot.y + slot.h / 2) / 1800) * 100}%`,
+                        left: `${((slot.x + slot.w / 2) / sheetSize(prepared.format).width) * 100}%`,
+                        top: `${((slot.y + slot.h / 2) / sheetSize(prepared.format).height) * 100}%`,
                       }}
                     >
                       {i + 1}

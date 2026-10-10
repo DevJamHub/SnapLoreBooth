@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { STRIP_FORMATS } from '@/lib/packages';
 import { readJson } from '@/lib/readJson';
 
 const MAX_COPIES = 10;
@@ -82,6 +83,11 @@ export default function ReprintPanel({ id, src, format, label }: { id: string; s
           <div key={i} className="print-sheet" data-format={format}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={src} alt="" />
+            {STRIP_FORMATS.includes(format) && (
+              // A strip prints two-up, the same as on the booth's own print screen.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={src} alt="" />
+            )}
           </div>
         ))}
       </div>

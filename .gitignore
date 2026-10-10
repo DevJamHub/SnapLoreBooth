@@ -6,3 +6,7 @@ next-env.d.ts
 .DS_Store
 certs/
 .env*.local
+.e2e-data/
+test-results/
+playwright-report/
+.next-e2e/

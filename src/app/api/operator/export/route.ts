@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { NextResponse } from 'next/server';
+import { contactsCsv } from '@/lib/contacts';
 import { UPLOAD_DIR, db } from '@/lib/db';
 import { eventById } from '@/lib/events';
 import { rangeOf, sessionsCsv } from '@/lib/reports';
@@ -23,10 +24,21 @@ const stamp = () => new Date().toISOString().slice(0, 10);
  * `?kind=zip&event=<id>&all=1` — an event's finished sheets as a ZIP; `all=1` adds every
  * photo and video, one folder per session. Only what is still on this server's disk.
  * `?kind=db` — a backup of the database: events, sessions, payments, frames, settings.
+ * `?kind=contacts` — the contacts guests left (with consent) as a spreadsheet.
  */
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
   const kind = params.get('kind');
+
+  if (kind === 'contacts') {
+    return new NextResponse(contactsCsv(), {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="snaplorebooth-kontak-${stamp()}.csv"`,
+        'Cache-Control': 'no-store',
+      },
+    });
+  }
 
   if (kind === 'csv') {
     const range = rangeOf(params.get('r') ?? undefined);

@@ -4,6 +4,7 @@ import { getConfig, sheetText } from '@/lib/config';
 import { getSession, listPhotos } from '@/lib/db';
 import { eventById } from '@/lib/events';
 import { listFrames } from '@/lib/frames';
+import { printedQr } from '@/lib/publicUrl';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +27,7 @@ export default async function FramePage({ params }: { params: Promise<{ id: stri
       showDate={config.sheet.date}
       frames={listFrames(session.format, { offered: true })}
       builtin={config.sheet.builtin}
+      qr={await printedQr(id, config)}
     />
   );
 }

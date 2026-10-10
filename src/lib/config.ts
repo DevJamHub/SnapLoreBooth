@@ -1,6 +1,6 @@
 import { CHOICES, DEFAULT_PROMPTS, VIDEO_BITRATES, type BoothConfig } from './configShared';
 import { getSetting, setSetting } from './db';
-import { BEAUTY, FILTERS, MAX_EXTRA_PRINTS, PACKAGES } from './packages';
+import { BEAUTY, FILTERS, LOOKS_ADDED_V2, MAX_EXTRA_PRINTS, PACKAGES } from './packages';
 
 export { CHOICES, DEFAULT_PROMPTS, VIDEO_BITRATES } from './configShared';
 export type { BoothConfig, VideoQuality } from './configShared';
@@ -13,7 +13,7 @@ const envNumber = (name: string, fallback: number) => {
 export function defaultConfig(): BoothConfig {
   const retention = envNumber('RETENTION_HOURS', 168);
   return {
-    standby: { kicker: '', title: 'Senyum dulu,', accent: 'yuk!', button: 'Sentuh untuk mulai', chips: true, holdSeconds: 3 },
+    standby: { kicker: '', title: 'Senyum dulu,', accent: 'yuk!', button: 'Sentuh untuk mulai', chips: true, holdSeconds: 3, showcase: true, fullscreen: true, english: true },
     packages: { enabled: PACKAGES.map((p) => p.id), extraPrints: true, maxExtra: MAX_EXTRA_PRINTS },
     flow: {
       idleSeconds: 60,
@@ -23,13 +23,29 @@ export function defaultConfig(): BoothConfig {
       captureSeconds: 600,
       countdown: 3,
       showTenths: 12,
-      gayaSeconds: 120,
+      // Long enough to add stickers and a few words, not only to pick a look.
+      gayaSeconds: 180,
       shareSeconds: 45,
     },
-    sheet: { text: '', date: true, builtin: true },
-    capture: { sound: true, retake: true, prompts: DEFAULT_PROMPTS, clips: true, videoQuality: 'standar' },
-    style: { filters: FILTERS.map((f) => f.id), defaultFilter: 'original', beauty: true, defaultBeauty: 'off' },
-    share: { qr: true, galleryChoice: true, galleryDefault: true, liveVideo: true, message: '' },
+    sheet: { text: '', date: true, builtin: true, qr: true },
+    // No spoken prompts and no bonus shots unless the operator turns them on: a guest shoots
+    // exactly as many photos as the sheet has holes, and hears only beeps.
+    capture: { sound: true, voice: false, retake: true, bonus: 0, prompts: DEFAULT_PROMPTS, clips: true, videoQuality: 'standar' },
+    style: { filters: FILTERS.map((f) => f.id), defaultFilter: 'original', beauty: true, defaultBeauty: 'off', decor: true, backgrounds: true },
+    // Guests neither erase their photos nor take them out of the gallery themselves; the
+    // operator does both from the session log, unless these are switched back on.
+    share: {
+      qr: true,
+      galleryChoice: false,
+      galleryDefault: true,
+      liveVideo: true,
+      message: '',
+      upsell: true,
+      contacts: true,
+      question: 'Tahu booth ini dari mana?',
+      answers: ['Lewat di sini', 'Instagram', 'TikTok', 'Teman', 'Lainnya'],
+      erase: false,
+    },
     // Videos take most of the disk and guests download the same day: they go after 3 days.
     storage: { photoHours: retention, videoHours: Math.min(72, retention), maxEdge: 2400, quality: 85 },
   };
@@ -38,6 +54,7 @@ export function defaultConfig(): BoothConfig {
 const KEY = 'booth.config';
 const MAX_TEXT = 60;
 const MAX_PROMPTS = 12;
+const MAX_ANSWERS = 8;
 
 export class ConfigInputError extends Error {}
 
@@ -75,16 +92,19 @@ function reader(strict: boolean) {
     },
     subset(value: unknown, fallback: string[], field: string, options: string[], required: string[] = []): string[] {
       if (value === undefined) return fallback;
-      if (!Array.isArray(value) || value.some((v) => !options.includes(v as string))) return fail(field, 'pilihan tidak dikenal'), fallback;
+      if (!Array.isArray(value)) return fail(field, 'pilihan tidak dikenal'), fallback;
+      // The operator may only tick what is offered; a stored list may name something since retired
+      // (a package taken off the catalogue), which is dropped rather than resetting the whole list.
+      if (strict && value.some((v) => !options.includes(v as string))) return fail(field, 'pilihan tidak dikenal'), fallback;
       // Kept in the catalogue's order, whatever order they were ticked in.
       const chosen = options.filter((o) => value.includes(o) || required.includes(o));
       if (chosen.length === 0) return fail(field, 'pilih minimal satu'), fallback;
       return chosen;
     },
-    lines(value: unknown, fallback: string[], field: string): string[] {
+    lines(value: unknown, fallback: string[], field: string, max = MAX_PROMPTS): string[] {
       if (value === undefined) return fallback;
       if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) return fail(field, 'harus daftar teks'), fallback;
-      const lines = (value as string[]).map((v) => v.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT)).filter(Boolean).slice(0, MAX_PROMPTS);
+      const lines = (value as string[]).map((v) => v.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT)).filter(Boolean).slice(0, max);
       if (lines.length === 0) return fail(field, 'isi minimal satu baris'), fallback;
       return lines;
     },
@@ -117,6 +137,9 @@ function merge(base: BoothConfig, input: unknown, strict: boolean): BoothConfig 
       button: r.text(s.button, base.standby.button, 'Tombol mulai', false),
       chips: r.bool(s.chips, base.standby.chips, 'Info bawah'),
       holdSeconds: r.oneOf(s.holdSeconds, base.standby.holdSeconds, 'Tahan logo', CHOICES.holdSeconds),
+      showcase: r.bool(s.showcase, base.standby.showcase, 'Foto tamu di layar awal'),
+      fullscreen: r.bool(s.fullscreen, base.standby.fullscreen, 'Layar penuh'),
+      english: r.bool(s.english, base.standby.english, 'Bahasa Inggris'),
     },
     packages: {
       enabled: r.subset(p.enabled, base.packages.enabled, 'Paket', PACKAGES.map((x) => x.id)),
@@ -138,10 +161,13 @@ function merge(base: BoothConfig, input: unknown, strict: boolean): BoothConfig 
       text: r.text(sh0.text, base.sheet.text, 'Tulisan di bingkai'),
       date: r.bool(sh0.date, base.sheet.date, 'Tanggal di bingkai'),
       builtin: r.bool(sh0.builtin, base.sheet.builtin, 'Bingkai bawaan'),
+      qr: r.bool(sh0.qr, base.sheet.qr, 'QR di cetakan'),
     },
     capture: {
       sound: r.bool(c.sound, base.capture.sound, 'Suara'),
+      voice: r.bool(c.voice, base.capture.voice, 'Suara pemandu'),
       retake: r.bool(c.retake, base.capture.retake, 'Foto ulang'),
+      bonus: r.oneOf(c.bonus, base.capture.bonus, 'Foto bonus', CHOICES.bonus),
       prompts: r.lines(c.prompts, base.capture.prompts, 'Arahan pose'),
       clips: r.bool(c.clips, base.capture.clips, 'Video per foto'),
       videoQuality: r.oneOf(c.videoQuality, base.capture.videoQuality, 'Kualitas video', CHOICES.videoQuality),
@@ -151,6 +177,8 @@ function merge(base: BoothConfig, input: unknown, strict: boolean): BoothConfig 
       defaultFilter: r.oneOf(st.defaultFilter, base.style.defaultFilter, 'Gaya awal', FILTERS.map((x) => x.id)),
       beauty: r.bool(st.beauty, base.style.beauty, 'Mode beauty'),
       defaultBeauty: r.oneOf(st.defaultBeauty, base.style.defaultBeauty, 'Beauty awal', BEAUTY.map((x) => x.id)),
+      decor: r.bool(st.decor, base.style.decor, 'Stiker & coretan'),
+      backgrounds: r.bool(st.backgrounds, base.style.backgrounds, 'Latar AI'),
     },
     share: {
       qr: r.bool(sh.qr, base.share.qr, 'QR'),
@@ -158,6 +186,11 @@ function merge(base: BoothConfig, input: unknown, strict: boolean): BoothConfig 
       galleryDefault: r.bool(sh.galleryDefault, base.share.galleryDefault, 'Galeri otomatis'),
       liveVideo: r.bool(sh.liveVideo, base.share.liveVideo, 'Video sheet'),
       message: r.text(sh.message, base.share.message, 'Pesan di halaman unduhan', true, 140),
+      upsell: r.bool(sh.upsell, base.share.upsell, 'Cetak lagi'),
+      contacts: r.bool(sh.contacts, base.share.contacts, 'Kontak tamu'),
+      question: r.text(sh.question, base.share.question, 'Pertanyaan', true, 80),
+      answers: r.lines(sh.answers, base.share.answers, 'Pilihan jawaban', MAX_ANSWERS),
+      erase: r.bool(sh.erase, base.share.erase, 'Tamu bisa menghapus fotonya'),
     },
     storage: {
       photoHours,
@@ -175,6 +208,43 @@ function merge(base: BoothConfig, input: unknown, strict: boolean): BoothConfig 
   return config;
 }
 
+const CATALOGUE_V2 = 'migration.catalogue_v2';
+
+/**
+ * A booth saved before the new looks existed lists only the old ones, so guests would never see
+ * them. Offered once; an operator who switches them off keeps them off.
+ */
+function offerNewCatalogue(parsed: unknown): unknown {
+  if (getSetting(CATALOGUE_V2)) return parsed;
+  if (isObject(parsed)) {
+    const style = parsed.style;
+    if (isObject(style) && Array.isArray(style.filters)) {
+      style.filters = [...style.filters, ...LOOKS_ADDED_V2.filter((id) => !(style.filters as unknown[]).includes(id))];
+    }
+    setSetting(KEY, JSON.stringify(parsed));
+  }
+  setSetting(CATALOGUE_V2, '1');
+  return parsed;
+}
+
+const GUEST_EXTRAS_OFF = 'migration.guest_extras_off';
+
+/**
+ * The guiding voice, bonus shots, and guests erasing their photos or leaving the gallery all
+ * used to be on, and a booth saved back then stored them on. Switched off once; an operator who
+ * turns one back on afterwards keeps it.
+ */
+function switchOffGuestExtras(parsed: unknown): unknown {
+  if (getSetting(GUEST_EXTRAS_OFF)) return parsed;
+  if (isObject(parsed)) {
+    if (isObject(parsed.capture)) Object.assign(parsed.capture, { voice: false, bonus: 0 });
+    if (isObject(parsed.share)) Object.assign(parsed.share, { erase: false, galleryChoice: false });
+    setSetting(KEY, JSON.stringify(parsed));
+  }
+  setSetting(GUEST_EXTRAS_OFF, '1');
+  return parsed;
+}
+
 export function getConfig(): BoothConfig {
   const stored = getSetting(KEY);
   let parsed: unknown = null;
@@ -183,7 +253,7 @@ export function getConfig(): BoothConfig {
   } catch {
     // A damaged document reads as the defaults; the next save replaces it.
   }
-  return merge(defaultConfig(), parsed, false);
+  return merge(defaultConfig(), switchOffGuestExtras(offerNewCatalogue(parsed)), false);
 }
 
 /** Applies the operator's changes (any subset of sections and fields); invalid input is refused. */

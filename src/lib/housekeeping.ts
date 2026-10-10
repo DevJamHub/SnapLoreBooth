@@ -28,6 +28,8 @@ const KIND: [RegExp, keyof StorageBreakdown][] = [
   [/^clip-\d+\./, 'clips'],
   [/^live\./, 'live'],
   [/^strip\./, 'sheets'],
+  // GIFs and boomerangs made for the QR page go with the videos they came from.
+  [/^fx-/, 'clips'],
 ];
 
 function knownSessions(): Set<string> {

@@ -37,6 +37,8 @@ function deviceName(): string {
   const ua = navigator.userAgent;
   if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return 'iPad';
   if (/Android/.test(ua)) return 'Android tablet';
+  // Chrome on a large Android tablet asks for desktop sites, saying Linux; touch gives it away.
+  if (/Linux/.test(ua) && navigator.maxTouchPoints > 1) return 'Android tablet';
   if (/Macintosh/.test(ua)) return 'Mac';
   if (/Windows/.test(ua)) return 'Windows';
   return 'Perangkat';

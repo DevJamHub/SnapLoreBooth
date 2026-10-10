@@ -19,6 +19,12 @@ export const PACKAGES: BoothPackage[] = [
   { id: 'single', label: 'Satu Potret', format: 'single', shots: 1, priceIdr: 20000, cols: 1, rows: 1, blurb: 'Satu foto terbaikmu, satu lembar penuh.' },
 ];
 
+/**
+ * Narrow strips from packages no longer offered (2x6, and Strip 4 Pose: the booth's paper comes
+ * out as whole 4R sheets, with no cutter). Kept so their sessions still show and reprint two-up.
+ */
+export const STRIP_FORMATS = ['strip4', '2x6'];
+
 /** Priced per extra 4R sheet; guests pick how many. */
 export const EXTRA_PRINT = { id: 'extra-print', label: '+1 cetak', priceIdr: 15000 };
 export const MAX_EXTRA_PRINTS = 20;
@@ -38,10 +44,17 @@ export type FilterOp =
   | { op: 'sepia'; v: number }
   | { op: 'grayscale'; v: number };
 
+/**
+ * Textures laid over each photo after its colour: film grain, darkened corners, and a warm
+ * light leak. Drawn per slot, so a tilted hole gets its own; cheap enough for the live video.
+ */
+export type FilterFx = 'grain' | 'vignette' | 'leak';
+
 export interface BoothFilter {
   id: string;
   label: string;
   ops: FilterOp[];
+  fx?: FilterFx[];
 }
 
 export const FILTERS: BoothFilter[] = [
@@ -50,7 +63,20 @@ export const FILTERS: BoothFilter[] = [
   { id: 'ilford', label: 'Hitam Putih', ops: [{ op: 'grayscale', v: 1 }, { op: 'contrast', v: 1.12 }] },
   { id: 'faded', label: 'Vintage', ops: [{ op: 'sepia', v: 0.45 }, { op: 'contrast', v: 0.94 }, { op: 'brightness', v: 1.06 }] },
   { id: 'golden', label: 'Senja', ops: [{ op: 'saturate', v: 1.25 }, { op: 'sepia', v: 0.22 }, { op: 'brightness', v: 1.05 }] },
+  { id: 'seoul', label: 'Korea Soft', ops: [{ op: 'brightness', v: 1.08 }, { op: 'contrast', v: 0.9 }, { op: 'saturate', v: 0.86 }] },
+  { id: 'film', label: 'Film', ops: [{ op: 'contrast', v: 1.06 }, { op: 'saturate', v: 0.9 }, { op: 'sepia', v: 0.16 }], fx: ['grain', 'vignette'] },
+  { id: 'pastel', label: 'Pastel', ops: [{ op: 'saturate', v: 0.72 }, { op: 'brightness', v: 1.1 }, { op: 'contrast', v: 0.86 }] },
+  { id: 'pop', label: 'Ceria', ops: [{ op: 'saturate', v: 1.4 }, { op: 'contrast', v: 1.07 }, { op: 'brightness', v: 1.03 }] },
+  { id: 'retro', label: 'Retro', ops: [{ op: 'sepia', v: 0.3 }, { op: 'saturate', v: 1.2 }, { op: 'contrast', v: 1.1 }], fx: ['leak', 'grain'] },
+  { id: 'drama', label: 'Dramatis', ops: [{ op: 'grayscale', v: 1 }, { op: 'contrast', v: 1.35 }, { op: 'brightness', v: 0.96 }], fx: ['vignette', 'grain'] },
 ];
+
+/** Looks added after booths were already set up; a one-time migration offers them (config.ts). */
+export const LOOKS_ADDED_V2 = ['seoul', 'film', 'pastel', 'pop', 'retro', 'drama'];
+
+export function filterFx(id: string): FilterFx[] {
+  return FILTERS.find((f) => f.id === id)?.fx ?? [];
+}
 
 export function filterCss(id: string): string {
   const ops = FILTERS.find((f) => f.id === id)?.ops ?? [];

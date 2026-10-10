@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { db, FRAME_DIR } from './db';
 import { PACKAGES } from './packages';
+import { sheetSize } from './layout';
 import type { CustomFrame, Session } from './types';
 
 interface FrameRow {
@@ -15,10 +16,9 @@ interface FrameRow {
   created_at: string;
 }
 
-/** Holes are stored in the coordinates of the 4R sheet every board is composed on. */
-const SHEET = { width: 1200, height: 1800 };
 const MAX_FRAME_BYTES = 10 * 1024 * 1024;
-const MIN_FRAME_WIDTH = 600;
+/** Half the sheet a frame is stored at (sheetSize): anything smaller prints blurry. */
+const MIN_FRAME_SHARE = 0.5;
 const MIN_HOLE = 40;
 export const MAX_FRAME_NAME = 24;
 export const MAX_THEME_NAME = 20;
@@ -87,7 +87,8 @@ function pngSize(bytes: Uint8Array): { width: number; height: number } | null {
   return { width: view.getUint32(16), height: view.getUint32(20) };
 }
 
-function validSlots(raw: unknown, shots: number): CustomFrame['slots'] {
+/** Holes are in the coordinates of the board the package is composed on (sheetSize). */
+function validSlots(raw: unknown, shots: number, sheet: { width: number; height: number }): CustomFrame['slots'] {
   if (!Array.isArray(raw) || raw.length !== shots) {
     throw new FrameInputError(`frame untuk paket ini butuh ${shots} lubang foto`);
   }
@@ -101,12 +102,12 @@ function validSlots(raw: unknown, shots: number): CustomFrame['slots'] {
       Object.values(rect).every(Number.isFinite) &&
       rect.w >= MIN_HOLE &&
       rect.h >= MIN_HOLE &&
-      rect.w <= SHEET.height &&
-      rect.h <= SHEET.height &&
+      rect.w <= sheet.height &&
+      rect.h <= sheet.height &&
       cx >= 0 &&
-      cx <= SHEET.width &&
+      cx <= sheet.width &&
       cy >= 0 &&
-      cy <= SHEET.height &&
+      cy <= sheet.height &&
       Math.abs(rect.angle) <= 45;
     if (!ok) throw new FrameInputError('posisi lubang foto tidak valid');
     const tilt = Math.round(rect.angle * 10) / 10;
@@ -135,11 +136,12 @@ export async function saveFrame(input: { name: string; theme: string; format: st
   if (input.bytes.byteLength > MAX_FRAME_BYTES) throw new FrameInputError('file frame maksimal 10 MB');
   const size = pngSize(input.bytes);
   if (!size) throw new FrameInputError('file harus PNG');
-  if (size.width < MIN_FRAME_WIDTH || Math.abs(size.width / size.height - 2 / 3) > 0.02) {
-    throw new FrameInputError(`ukuran harus 4R tegak (2:3), mis. 1200×1800 px — file ini ${size.width}×${size.height} px`);
+  const sheet = sheetSize(pkg.format);
+  if (size.width < sheet.width * MIN_FRAME_SHARE || Math.abs(size.width / size.height - sheet.width / sheet.height) > 0.02) {
+    throw new FrameInputError(`ukuran harus ${sheet.width}×${sheet.height} px (atau rasio yang sama) — file ini ${size.width}×${size.height} px`);
   }
 
-  const slots = validSlots(input.slots, pkg.shots);
+  const slots = validSlots(input.slots, pkg.shots, sheet);
   const suffix = Array.from(crypto.getRandomValues(new Uint8Array(3)), (b) => (b % 36).toString(36)).join('');
   // Upper case keeps frame ids apart from the built-in frames' lower-case ids.
   const id = `FR${Date.now().toString(36)}${suffix}`.toUpperCase();

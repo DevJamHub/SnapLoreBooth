@@ -6,6 +6,8 @@ import { eventById } from '@/lib/events';
 import { mediaUrl } from '@/lib/format';
 import { frameForSession } from '@/lib/frames';
 import { sessionUnlocked } from '@/lib/payments';
+import { slotOrder } from '@/lib/picks';
+import { printedQr } from '@/lib/publicUrl';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +20,8 @@ export default async function StylePage({ params }: { params: Promise<{ id: stri
   if (!sessionUnlocked(id)) redirect(`/pay/${id}`);
 
   const byIndex = new Map(listPhotos(id).map((p) => [p.idx, mediaUrl(p.file, p.created_at)]));
-  const photos = Array.from({ length: session.shots }, (_, i) => byIndex.get(i + 1) ?? null);
+  // The guest's picks when they shot bonus photos, else the photos as shot.
+  const photos = slotOrder(session).map((n) => byIndex.get(n) ?? null);
   // A missing shot is taken on the photo screen, never printed as a hole.
   if (photos.some((p) => p === null)) redirect(`/capture/${id}`);
 
@@ -26,13 +29,14 @@ export default async function StylePage({ params }: { params: Promise<{ id: stri
   const { flow, style } = config;
   return (
     <StyleStage
-      settings={{ seconds: flow.gayaSeconds, filters: style.filters, beauty: style.beauty }}
+      settings={{ seconds: flow.gayaSeconds, filters: style.filters, beauty: style.beauty, decor: style.decor, backgrounds: style.backgrounds }}
       session={session}
       payments={session.requires_payment}
       eventName={sheetText((session.event_id && eventById(session.event_id)?.name) || 'SnaploreBooth', config)}
       showDate={config.sheet.date}
       photos={photos as string[]}
       frame={frameForSession(session)}
+      qr={await printedQr(id, config)}
     />
   );
 }

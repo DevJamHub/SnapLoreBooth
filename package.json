@@ -10,9 +10,11 @@
     "dev:https": "next dev -p 4300 --experimental-https --experimental-https-key ./certs/booth-key.pem --experimental-https-cert ./certs/booth.pem",
     "certs": "mkcert -cert-file certs/booth.pem -key-file certs/booth-key.pem localhost 127.0.0.1 ::1 $(ipconfig getifaddr en0)",
     "camera:free": "bash scripts/free-camera.sh",
-    "tunnel": "cloudflared tunnel --url http://localhost:4300"
+    "tunnel": "cloudflared tunnel --url http://localhost:4300",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "1.0.1",
     "aws4fetch": "^1.0.20",
     "better-sqlite3": "^12.11.1",
     "next": "^15.5.4",
@@ -21,6 +23,7 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.15.0",
     "@types/qrcode": "^1.5.5",

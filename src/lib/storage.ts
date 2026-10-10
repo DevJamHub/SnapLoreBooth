@@ -22,6 +22,7 @@ const CONTENT_TYPES: Record<string, string> = {
   jpg: 'image/jpeg',
   mp4: 'video/mp4',
   webm: 'video/webm',
+  gif: 'image/gif',
 };
 
 export function contentTypeFor(file: string): string {

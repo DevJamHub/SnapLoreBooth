@@ -4,6 +4,7 @@ import { deletePrefix } from './cloud';
 import { getConfig } from './config';
 import { db, UPLOAD_DIR } from './db';
 import { currentEvent, eventById } from './events';
+import { removeMotion } from './motion';
 import { folderSize, removeStored } from './storage';
 
 /**
@@ -67,6 +68,8 @@ export async function purgeVideos(cutoff: string): Promise<number> {
     const removed = await Promise.all(files.map((f) => removeStored(f)));
     // A copy R2 would not delete keeps its row, so the next sweep tries again.
     if (removed.some((ok) => !ok)) continue;
+    // The GIFs and boomerangs made from them go too.
+    await removeMotion(session.id);
     db.prepare('UPDATE photos SET clip_file = NULL WHERE session_id = ?').run(session.id);
     db.prepare('UPDATE sessions SET live_file = NULL WHERE id = ?').run(session.id);
     purged++;
@@ -87,6 +90,27 @@ export async function purgeExpired(force = false): Promise<PurgeResult> {
   const videos = videoHours < photoHours ? await purgeVideos(new Date(now - videoHours * 3600_000).toISOString()) : 0;
 
   return { sessions: expired.length, videos, skipped: false };
+}
+
+/**
+ * A guest's "Hapus fotoku" on the page the QR opens: every photo, video and the sheet go, here
+ * and in R2, and the session forgets them and leaves the gallery. The session and its payments
+ * stay, so the day's revenue and counts still add up. False when R2 would not delete.
+ */
+export async function eraseSessionMedia(id: string): Promise<boolean> {
+  usageCache = null;
+  await fs.rm(path.join(UPLOAD_DIR, id), { recursive: true, force: true });
+  try {
+    await deletePrefix(id);
+  } catch (error) {
+    console.error('[retention] R2 delete failed for', id, error instanceof Error ? error.message : error);
+    return false;
+  }
+  db.prepare('DELETE FROM photos WHERE session_id = ?').run(id);
+  db.prepare(
+    `UPDATE sessions SET strip_file = NULL, live_file = NULL, decor = NULL, picks = NULL, in_gallery = 0, erased_at = ? WHERE id = ?`,
+  ).run(new Date().toISOString(), id);
+  return true;
 }
 
 /** What the operator types to confirm wiping every guest's photos, or many at once. */

@@ -1,3 +1,5 @@
+import type { DecorItem } from './decor';
+
 export type SessionStatus = 'capturing' | 'reviewing' | 'ready' | 'printing' | 'done';
 
 export interface Session {
@@ -31,6 +33,22 @@ export interface Session {
   mirror: boolean;
   /** Skin smoothing chosen on the Gaya screen; see BEAUTY in packages.ts. */
   beauty: string;
+  /** Stickers, writing and doodles the guest put on the sheet; see lib/decor.ts. */
+  decor: DecorItem[];
+  /** The promo code used, if any; `price_idr` is already after it. */
+  voucher: string | null;
+  /** What the promo code took off. */
+  discount_idr: number;
+  /** Photos shot beyond the sheet's holes, to pick the best from; see lib/picks.ts. */
+  bonus: number;
+  /** The photo number in each hole, in order; null for the first ones shot. */
+  picks: number[] | null;
+  /** When the guest deleted their photos and videos from the QR page; the record stays. */
+  erased_at: string | null;
+  /** The AI backdrop behind the guests on the sheet, or "none"; see lib/backgrounds.ts. */
+  background: string;
+  /** The guest's language ("id" or "en"), for the page their QR opens. */
+  lang: string;
 }
 
 export interface Photo {
@@ -67,7 +85,13 @@ export interface Payment {
   created_at: string;
   paid_at: string | null;
   provider_payment_id: string | null;
+  /** The session itself, or sheets bought on the print screen afterwards. */
+  purpose: PaymentPurpose;
+  /** For extra sheets: how many this payment adds to the session's prints. */
+  copies: number;
 }
+
+export type PaymentPurpose = 'session' | 'extra';
 
 export type PaymentMode = 'qris' | 'free';
 export type PrintMode = 'simulated' | 'airprint';

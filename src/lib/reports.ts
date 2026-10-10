@@ -49,6 +49,8 @@ export interface SessionRow {
   paid_idr: number;
   paid_at: string | null;
   done: number;
+  voucher: string | null;
+  discount_idr: number;
 }
 
 /** Every session in the range with what was paid for it, newest first. */
@@ -57,7 +59,7 @@ export function sessionsIn(range: RangeId): SessionRow[] {
   return db
     .prepare(
       `SELECT s.id, s.created_at, e.name AS event_name, s.package_label, s.price_idr, s.requires_payment, s.prints, s.reprints, s.status,
-              s.filter, s.beauty, s.template, s.in_gallery, s.mirror,
+              s.filter, s.beauty, s.template, s.in_gallery, s.mirror, s.voucher, s.discount_idr,
               (SELECT COUNT(*) FROM photos p WHERE p.session_id = s.id) AS photo_count,
               COALESCE((SELECT SUM(amount_idr) FROM payments p WHERE p.session_id = s.id AND p.status = 'paid'), 0) AS paid_idr,
               (SELECT MAX(paid_at) FROM payments p WHERE p.session_id = s.id AND p.status = 'paid') AS paid_at,
@@ -89,6 +91,10 @@ export interface Report {
   frames: { label: string; count: number }[];
   filters: { label: string; count: number }[];
   beauty: { label: string; count: number }[];
+  /** Promo codes on sessions that went ahead (paid, or made free by the code), most used first. */
+  promos: { label: string; count: number; discount: number }[];
+  /** What the codes took off those sessions. */
+  discount: number;
 }
 
 const dayKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -134,7 +140,21 @@ export function buildReport(range: RangeId): Report {
     frames: ranked(tally(finished, (r) => r.template), frameLabel),
     filters: ranked(tally(finished, (r) => r.filter), (id) => FILTERS.find((f) => f.id === id)?.label ?? id),
     beauty: ranked(tally(finished, (r) => r.beauty), (id) => BEAUTY.find((b) => b.id === id)?.label ?? id),
+    promos: [],
+    discount: 0,
   };
+
+  // A code typed by a guest who then walked away at QRIS took nothing off anything.
+  const promoted = rows.filter((r) => r.voucher && (r.paid_idr > 0 || !r.requires_payment));
+  const promos = new Map<string, { count: number; discount: number }>();
+  for (const row of promoted) {
+    const entry = promos.get(row.voucher!) ?? { count: 0, discount: 0 };
+    entry.count++;
+    entry.discount += row.discount_idr;
+    promos.set(row.voucher!, entry);
+    report.discount += row.discount_idr;
+  }
+  report.promos = [...promos.entries()].map(([label, v]) => ({ label, ...v })).sort((a, b) => b.count - a.count);
 
   for (const row of rows) report.hours[new Date(row.created_at).getHours()]++;
 
@@ -176,7 +196,7 @@ const csvCell = (value: unknown) => {
 
 /** The range's sessions as CSV (Excel and Google Sheets open it; the BOM keeps the accents). */
 export function sessionsCsv(range: RangeId): string {
-  const header = ['Kode', 'Waktu', 'Acara', 'Paket', 'Harga (Rp)', 'Dibayar (Rp)', 'Status bayar', 'Dibayar pada', 'Lembar', 'Cetak ulang', 'Selesai', 'Bingkai', 'Gaya warna', 'Beauty', 'Cermin', 'Di galeri', 'Jumlah foto'];
+  const header = ['Kode', 'Waktu', 'Acara', 'Paket', 'Harga (Rp)', 'Dibayar (Rp)', 'Status bayar', 'Dibayar pada', 'Lembar', 'Cetak ulang', 'Selesai', 'Bingkai', 'Gaya warna', 'Beauty', 'Cermin', 'Di galeri', 'Jumlah foto', 'Kode promo', 'Diskon (Rp)'];
   const lines = sessionsIn(range).map((r) =>
     [
       r.id,
@@ -196,6 +216,8 @@ export function sessionsCsv(range: RangeId): string {
       r.mirror ? 'Ya' : 'Tidak',
       r.in_gallery ? 'Ya' : 'Tidak',
       r.photo_count,
+      r.voucher ?? '',
+      r.discount_idr,
     ]
       .map(csvCell)
       .join(','),

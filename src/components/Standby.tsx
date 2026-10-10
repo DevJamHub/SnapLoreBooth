@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { Logo } from '@/components/guest/GuestHeader';
 import { useLongPress } from '@/components/guest/hooks';
 import { ArrowRight } from '@/components/guest/icons';
+import { useChooseLang, useT } from '@/components/guest/lang';
+import type { Lang } from '@/lib/i18n';
 import type { BoothConfig } from '@/lib/config';
 import { formatPrice } from '@/lib/packages';
 
@@ -24,23 +26,51 @@ export default function Standby({
   fromPrice,
   eventName,
   text,
+  showcase,
 }: {
   fromPrice: number | null;
   eventName: string | null;
   /** The operator's words for this screen (Konsol → Pengaturan → Layar awal). */
   text: BoothConfig['standby'];
+  /** The newest sheets guests let into the gallery, newest first; the rest stay stand-ins. */
+  showcase: string[];
 }) {
   const router = useRouter();
+  const t = useT();
+  const chooseLang = useChooseLang();
+
+  // The waiting booth speaks Indonesian; English is one tap away for the guest who wants it.
+  // Once, on arrival: the English button switches it on the way out.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => chooseLang('id'), []);
   const { holding, handlers } = useLongPress(text.holdSeconds * 1000, () => router.push('/operator'));
+
+  /**
+   * A browser tab shows its address bar; full screen hides it until the page reloads. Only from
+   * a tap (browsers allow nothing else), and not where the booth already runs as an installed app.
+   */
+  const start = (lang: Lang = 'id') => {
+    // Every guest starts in Indonesian unless they ask for English.
+    chooseLang(lang);
+    const installed = window.matchMedia?.('(display-mode: standalone), (display-mode: fullscreen)').matches;
+    if (text.fullscreen && !installed && !document.fullscreenElement) {
+      void document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }).catch(() => undefined);
+    }
+    router.push('/paket');
+  };
 
   useEffect(() => {
     router.prefetch('/paket');
     // The status call also runs the photo-retention sweep, so the idle booth keeps forgetting old sessions.
     const ping = () => void fetch('/api/status', { cache: 'no-store' }).catch(() => undefined);
     ping();
-    const timer = setInterval(ping, STATUS_POLL_MS);
+    const timer = setInterval(() => {
+      ping();
+      // New sheets join the polaroids while the booth waits.
+      if (text.showcase) router.refresh();
+    }, STATUS_POLL_MS);
     return () => clearInterval(timer);
-  }, [router]);
+  }, [router, text.showcase]);
 
   return (
     <main className="standby">
@@ -52,7 +82,7 @@ export default function Standby({
         <Logo />
       </div>
       <span className="standby-hold" data-show={holding}>
-        Tahan untuk menu operator…
+        {t('Tahan untuk menu operator…')}
       </span>
 
       {POLAROIDS.map((p, i) => (
@@ -60,6 +90,7 @@ export default function Standby({
           key={i}
           className="polaroid"
           aria-hidden="true"
+          data-real={!!showcase[i]}
           style={
             {
               left: p.left,
@@ -72,7 +103,12 @@ export default function Standby({
             } as React.CSSProperties
           }
         >
-          <div className="polaroid-photo" />
+          {showcase[i] ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img className="polaroid-sheet" src={showcase[i]} alt="" draggable={false} />
+          ) : (
+            <div className="polaroid-photo" />
+          )}
         </div>
       ))}
 
@@ -87,22 +123,27 @@ export default function Standby({
             </>
           )}
         </h1>
-        <button className="g-cta standby-touch" type="button" onClick={() => router.push('/paket')}>
+        <button className="g-cta standby-touch" type="button" onClick={() => start('id')}>
           {text.button} <ArrowRight />
         </button>
+        {text.english && (
+          <button className="g-ghost standby-english" type="button" onClick={() => start('en')}>
+            Start in English
+          </button>
+        )}
       </div>
 
       <div className="standby-foot" hidden={!text.chips}>
         {fromPrice === null ? (
-          <span className="standby-chip">Gratis untuk tamu</span>
+          <span className="standby-chip">{t('Gratis untuk tamu')}</span>
         ) : (
           <>
-            <span className="standby-chip">Mulai {formatPrice(fromPrice)}</span>
-            <span className="standby-chip">Bayar pakai QRIS</span>
+            <span className="standby-chip">{t('Mulai {price}', { price: formatPrice(fromPrice) })}</span>
+            <span className="standby-chip">{t('Bayar pakai QRIS')}</span>
           </>
         )}
-        <span className="standby-chip">Langsung dicetak</span>
-        <span className="standby-chip">Simpan ke HP</span>
+        <span className="standby-chip">{t('Langsung dicetak')}</span>
+        <span className="standby-chip">{t('Simpan ke HP')}</span>
       </div>
     </main>
   );

@@ -1,6 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
+import { useT } from '@/components/guest/lang';
 
 export type StepId = 'pilih' | 'hias' | 'bayar' | 'foto' | 'gaya' | 'cetak';
 
@@ -23,16 +24,17 @@ export function Logo() {
 
 /** Where the guest is in the flow; the payment step disappears when the booth is free. */
 export function Steps({ current, payments }: { current: StepId; payments: boolean }) {
+  const t = useT();
   const steps = STEPS.filter((s) => payments || s.id !== 'bayar');
   const at = steps.findIndex((s) => s.id === current);
   return (
-    <nav className="g-steps" aria-label="Langkah">
+    <nav className="g-steps" aria-label={t('Langkah')}>
       {steps.map((step, i) => (
         <span key={step.id} style={{ display: 'contents' }}>
           {i > 0 && <span className="g-step-line" />}
           <span className="g-step" data-state={i < at ? 'done' : i === at ? 'current' : 'todo'}>
             <i>{i < at ? '✓' : i + 1}</i>
-            <b style={{ fontWeight: 'inherit' }}>{step.label}</b>
+            <b style={{ fontWeight: 'inherit' }}>{t(step.label)}</b>
           </span>
         </span>
       ))}
